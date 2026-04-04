@@ -16,10 +16,21 @@ from malcolm.storage import NullStorage, RequestRecord
 @pytest.mark.parametrize(
     "base_url, path, expected",
     [
-        ("https://api.example.com/v1", "/v1/chat/completions", "https://api.example.com/v1/chat/completions"),
-        ("https://api.example.com/v1/", "/v1/chat/completions", "https://api.example.com/v1/chat/completions"),
-        ("https://api.example.com/v1", "/chat/completions", "https://api.example.com/v1/chat/completions"),
+        # No base path — just append
+        ("https://api.example.com", "/v1/chat/completions", "https://api.example.com/v1/chat/completions"),
+        ("https://api.example.com/", "/v1/chat/completions", "https://api.example.com/v1/chat/completions"),
+        ("https://api.anthropic.com", "/v1/messages", "https://api.anthropic.com/v1/messages"),
+        ("http://localhost:11434", "/api/chat", "http://localhost:11434/api/chat"),
+        # Base path /v1, client includes /v1 — no duplication
         ("http://localhost:11434/v1", "/v1/chat/completions", "http://localhost:11434/v1/chat/completions"),
+        ("http://localhost:11434/v1", "/v1/messages", "http://localhost:11434/v1/messages"),
+        ("http://localhost:11434/v1/", "/v1/chat/completions", "http://localhost:11434/v1/chat/completions"),
+        # Base path /v1, client omits /v1 — prepend it
+        ("http://localhost:11434/v1", "/chat/completions", "http://localhost:11434/v1/chat/completions"),
+        ("http://localhost:11434/v1", "/messages", "http://localhost:11434/v1/messages"),
+        # Deeper base path
+        ("https://gateway.example.com/api/v1", "/v1/chat/completions", "https://gateway.example.com/api/v1/v1/chat/completions"),
+        ("https://gateway.example.com/api/v1", "/chat/completions", "https://gateway.example.com/api/v1/chat/completions"),
     ],
 )
 def test_build_target_url(base_url, path, expected):
@@ -71,7 +82,7 @@ def _make_fake_backend(response_body: dict | None = None, stream_chunks: list[st
     """Create a fake backend FastAPI app."""
     backend = FastAPI()
 
-    @backend.post("/chat/completions")
+    @backend.post("/v1/chat/completions")
     async def chat(request: Request):
         if stream_chunks is not None:
             from fastapi.responses import StreamingResponse

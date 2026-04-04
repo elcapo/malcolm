@@ -1,10 +1,12 @@
-# malcolm
+# Malcolm
 
-A transparent monitoring proxy for LLM API calls. malcolm sits between your LLM client tools (like [Claude Code](https://claude.ai/code) or [opencode](https://github.com/opencode-ai/opencode)) and the actual model backend, logging every request and response for inspection.
+![Malcolm, your AI monitoring](./resources/cover.png)
+
+A transparent monitoring proxy for LLM API calls. Malcolm sits between your LLM client tools (like [Claude Code](https://claude.ai/code) or [opencode](https://github.com/opencode-ai/opencode)) and the actual model backend, logging every request and response for inspection.
 
 ## Why?
 
-Tools like `claude` and `opencode` construct complex prompts with system instructions, tool definitions, and conversation history. malcolm lets you see exactly what gets sent to the model — useful for debugging, understanding tool behavior, and optimizing prompts.
+Tools like `claude` and `opencode` construct complex prompts with system instructions, tool definitions, and conversation history. Malcolm lets you see exactly what gets sent to the model — useful for debugging, understanding tool behavior, and optimizing prompts.
 
 ## Quick start
 
@@ -20,11 +22,11 @@ export MALCOLM_TARGET_API_KEY="sk-or-..."
 malcolm
 ```
 
-Then point your LLM tool to malcolm:
+Then point your LLM tool to Malcolm:
 
 ```bash
 export OPENAI_BASE_URL=http://127.0.0.1:8900/v1
-export OPENAI_API_KEY=dummy  # malcolm handles real auth
+export OPENAI_API_KEY=dummy  # Malcolm handles real auth
 claude --model openai/anthropic/claude-sonnet-4-20250514
 ```
 
@@ -51,7 +53,7 @@ See [docs/configuration.md](docs/configuration.md) for details.
 ```mermaid
 flowchart LR
     Client["Your LLM tool<br><span style="color: lightgray;">claude / opencode / curl</span>"]
-    Malcolm["malcolm<br><span style="color: lightgray;">localhost:8900</span>"]
+    Malcolm["Malcolm<br><span style="color: lightgray;">localhost:8900</span>"]
     Backend["Real LLM API"]
     DB[("SQLite<br><span style="color: lightgray;">malcolm.db</span>")]
 
@@ -62,7 +64,7 @@ flowchart LR
     Malcolm -. logs .-> DB
 ```
 
-malcolm exposes an OpenAI-compatible API. It captures the full request, forwards it to the configured backend, captures the full response (including streaming), and stores everything in a local SQLite database for later inspection.
+Malcolm exposes an OpenAI-compatible API. It captures the full request, forwards it to the configured backend, captures the full response (including streaming), and stores everything in a local SQLite database for later inspection.
 
 See [docs/architecture.md](docs/architecture.md) for the full architecture overview.
 

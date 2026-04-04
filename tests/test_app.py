@@ -31,6 +31,11 @@ def client_no_storage(monkeypatch, tmp_path):
         yield c
 
 
+def test_head_health_check(client):
+    resp = client.head("/")
+    assert resp.status_code == 200
+
+
 def test_root_redirects_to_logs(client):
     resp = client.get("/", follow_redirects=False)
     assert resp.status_code == 307
@@ -81,3 +86,18 @@ def test_chat_completions_without_v1_prefix(client):
         json={"model": "test", "messages": [{"role": "user", "content": "hi"}]},
     )
     assert resp.status_code == 502
+
+
+def test_anthropic_messages_endpoint(client):
+    """Catch-all should forward Anthropic API requests too."""
+    resp = client.post(
+        "/v1/messages",
+        json={"model": "claude-sonnet-4-20250514", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10},
+    )
+    assert resp.status_code == 502  # backend unreachable, but not 404
+
+
+def test_catch_all_get(client):
+    """GET requests to unknown paths should be forwarded, not 404."""
+    resp = client.get("/v1/models")
+    assert resp.status_code == 502  # backend unreachable, but not 404

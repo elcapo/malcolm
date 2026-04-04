@@ -19,40 +19,60 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("malcolm.proxy")
 
-_FORWARDED_HEADERS = {
-    "x-request-id",
-    "http-referer",
-    "x-title",
-    "user-agent",
+_SKIP_HEADERS = {
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "accept-encoding",
 }
 
 
 def _build_target_url(base_url: str, path: str) -> str:
-    base = base_url.rstrip("/")
-    # If the path includes /v1, strip it since base_url typically includes /v1
-    if path.startswith("/v1/"):
-        path = path[3:]
-    elif path.startswith("/v1"):
-        path = path[3:] or "/"
-    return base + path
+    """Build the target URL by combining base_url and the request path.
+
+    If base_url contains a path prefix (e.g. /v1) and the request path
+    already starts with that same prefix, it is not duplicated.
+
+    Examples:
+        ("http://host/v1", "/v1/messages")      -> "http://host/v1/messages"
+        ("http://host/v1", "/chat/completions")  -> "http://host/v1/chat/completions"
+        ("http://host",    "/v1/chat/completions") -> "http://host/v1/chat/completions"
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url)
+    base_path = parsed.path.rstrip("/")
+
+    if base_path and path.startswith(base_path):
+        # Client already includes the base path — don't duplicate
+        final_path = path
+    else:
+        # Prepend the base path
+        final_path = base_path + path
+
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    return origin + final_path
 
 
 def _build_headers(
     request: Request, settings: Settings
 ) -> dict[str, str]:
-    headers: dict[str, str] = {"content-type": "application/json"}
+    """Forward all client headers except hop-by-hop ones.
+
+    If MALCOLM_TARGET_API_KEY is set, override the Authorization header.
+    Otherwise forward the client's auth headers as-is (supports both
+    OpenAI-style Authorization and Anthropic-style x-api-key).
+    """
+    headers: dict[str, str] = {}
+
+    for key, value in request.headers.items():
+        if key.lower() not in _SKIP_HEADERS:
+            headers[key] = value
 
     if settings.target_api_key:
         headers["authorization"] = f"Bearer {settings.target_api_key}"
-    else:
-        auth = request.headers.get("authorization")
-        if auth:
-            headers["authorization"] = auth
-
-    for header_name in _FORWARDED_HEADERS:
-        value = request.headers.get(header_name)
-        if value:
-            headers[header_name] = value
 
     return headers
 
@@ -75,8 +95,12 @@ async def forward_request(
     headers = _build_headers(request, settings)
     start = time.monotonic()
 
+    method = request.method
     try:
-        response = await client.post(target_url, json=body, headers=headers)
+        if method in ("POST", "PUT", "PATCH"):
+            response = await client.request(method, target_url, json=body, headers=headers)
+        else:
+            response = await client.request(method, target_url, headers=headers)
         record.status_code = response.status_code
         record.duration_ms = (time.monotonic() - start) * 1000
 

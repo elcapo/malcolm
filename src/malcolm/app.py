@@ -8,6 +8,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from malcolm.config import Settings
+from fastapi.responses import Response
+
 from malcolm.proxy import forward_request, forward_request_stream
 from malcolm.storage import NullStorage, Storage
 from malcolm.viewer import router as viewer_router
@@ -52,43 +54,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="malcolm", lifespan=lifespan)
     app.include_router(viewer_router)
 
-    @app.post("/v1/chat/completions")
-    @app.post("/chat/completions")
-    async def chat_completions(request: Request):
-        body = await request.json()
-        stream = body.get("stream", False)
+    @app.head("/")
+    async def health_check():
+        return Response(status_code=200)
 
-        if stream:
-            return await forward_request_stream(
-                body, request, request.app.state.client,
-                request.app.state.settings, request.app.state.storage,
-            )
+    @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+    async def catch_all(request: Request, path: str):
+        """Catch-all proxy: forwards any unmatched route to the backend."""
+        if request.method in ("POST", "PUT", "PATCH"):
+            body = await request.json()
+            stream = body.get("stream", False)
+
+            if stream:
+                return await forward_request_stream(
+                    body, request, request.app.state.client,
+                    request.app.state.settings, request.app.state.storage,
+                )
+            else:
+                return await forward_request(
+                    body, request, request.app.state.client,
+                    request.app.state.settings, request.app.state.storage,
+                )
         else:
+            # GET, DELETE, HEAD, OPTIONS — forward without body
             return await forward_request(
-                body, request, request.app.state.client,
+                {}, request, request.app.state.client,
                 request.app.state.settings, request.app.state.storage,
-            )
-
-    @app.get("/v1/models")
-    @app.get("/models")
-    async def list_models(request: Request):
-        s = request.app.state.settings
-        target_url = s.target_url.rstrip("/") + "/models"
-        headers = {}
-        if s.target_api_key:
-            headers["authorization"] = f"Bearer {s.target_api_key}"
-        else:
-            auth = request.headers.get("authorization")
-            if auth:
-                headers["authorization"] = auth
-
-        try:
-            response = await request.app.state.client.get(target_url, headers=headers)
-            return JSONResponse(status_code=response.status_code, content=response.json())
-        except Exception as exc:
-            return JSONResponse(
-                status_code=502,
-                content={"error": {"message": f"Backend error: {exc}", "type": "proxy_error"}},
             )
 
     return app
