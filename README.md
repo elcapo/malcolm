@@ -62,7 +62,9 @@ flowchart LR
     Malcolm -. logs .-> DB
 ```
 
-Malcolm exposes an OpenAI-compatible API. It captures the full request, forwards it to the configured backend, captures the full response (including streaming), and stores everything in a local SQLite database for later inspection.
+Malcolm acts as a catch-all proxy: it accepts requests in any format (OpenAI, Anthropic, or any other HTTP API), captures the full request, forwards it to the configured backend, captures the full response (including streaming), and stores everything in a local SQLite database for later inspection.
+
+When client and backend speak different protocols, Malcolm can translate between them on the fly. Set `MALCOLM_TRANSLATE` to `anthropic_to_openai` or `openai_to_anthropic` and Malcolm will automatically convert requests, responses, and streaming events; including path rewriting (from `/v1/messages` to `/v1/chat/completions` and viceversa).
 
 See [docs/architecture.md](docs/architecture.md) for the full architecture overview.
 
