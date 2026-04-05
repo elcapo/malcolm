@@ -2,6 +2,9 @@
 
 ![Malcolm, your AI monitoring](./resources/cover.png)
 
+> [!WARNING]
+> Malcolm is in early development. APIs and configuration may change between releases.
+
 A transparent monitoring proxy for LLM API calls. Malcolm sits between your LLM client tools (like [Claude Code](https://claude.ai/code) or [OpenCode](https://github.com/opencode-ai/opencode)) and the actual model backend, logging every request and response for inspection.
 
 ## Why?
@@ -11,7 +14,12 @@ Tools like `claude` and `opencode` construct complex prompts with system instruc
 ## Quick start
 
 ```bash
-# Install
+# Either install from `pip`
+pip install malcolm-proxy
+
+# Or from `git`
+git clone https://github.com/elcapo/malcolm
+cd malcolm
 uv pip install -e .
 
 # Start the proxy
@@ -83,4 +91,4 @@ uv run malcolm
 
 ## License
 
-MIT
+Malcolm is distributed under a MIT license. See [LICENSE](./LICENSE) for more details.

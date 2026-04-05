@@ -1,9 +1,25 @@
 [project]
-name = "malcolm"
+name = "malcolm-proxy"
 version = "0.1.0"
 description = "Transparent LLM API monitoring proxy"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
+authors = [
+    { name = "Carlos Capote Pérez-Andreu", email = "carlos.capote@hawara.es" },
+]
+keywords = ["llm", "proxy", "monitoring", "api", "debugging"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: System :: Monitoring",
+]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
@@ -21,6 +37,11 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
 ]
+
+[project.urls]
+Homepage = "https://github.com/elcapo/malcolm"
+Repository = "https://github.com/elcapo/malcolm"
+Issues = "https://github.com/elcapo/malcolm/issues"
 
 [build-system]
 requires = ["hatchling"]
