@@ -1,6 +1,15 @@
 # Configuration
 
-malcolm is configured entirely through environment variables, all prefixed with `MALCOLM_`.
+malcolm is configured through environment variables (all prefixed with `MALCOLM_`) and CLI arguments (all prefixed with `--malcolm-`). CLI arguments take precedence over environment variables.
+
+```bash
+# These two are equivalent:
+MALCOLM_TARGET_URL=http://localhost:11434/v1 uv run malcolm
+uv run malcolm --malcolm-target-url=http://localhost:11434/v1
+
+# CLI arguments override environment variables:
+MALCOLM_PORT=8900 uv run malcolm --malcolm-port=9000  # listens on 9000
+```
 
 ## Required
 

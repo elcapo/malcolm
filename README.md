@@ -2,11 +2,11 @@
 
 ![Malcolm, your AI monitoring](./resources/cover.png)
 
-A transparent monitoring proxy for LLM API calls. Malcolm sits between your LLM client tools (like [Claude Code](https://claude.ai/code) or [opencode](https://github.com/opencode-ai/opencode)) and the actual model backend, logging every request and response for inspection.
+A transparent monitoring proxy for LLM API calls. Malcolm sits between your LLM client tools (like [Claude Code](https://claude.ai/code) or [OpenCode](https://github.com/opencode-ai/opencode)) and the actual model backend, logging every request and response for inspection.
 
 ## Why?
 
-Tools like `claude` and `opencode` construct complex prompts with system instructions, tool definitions, and conversation history. Malcolm lets you see exactly what gets sent to the model — useful for debugging, understanding tool behavior, and optimizing prompts.
+Tools like `claude` and `opencode` construct complex prompts with system instructions, tool definitions, and conversation history. Malcolm lets you see exactly what gets sent to the model. It's useful for debugging, understanding tool behavior, and optimizing prompts.
 
 ## Quick start
 
@@ -14,20 +14,17 @@ Tools like `claude` and `opencode` construct complex prompts with system instruc
 # Install
 uv pip install -e .
 
-# Configure the backend to proxy to
-export MALCOLM_TARGET_URL="https://openrouter.ai/api/v1"
-export MALCOLM_TARGET_API_KEY="sk-or-..."
-
 # Start the proxy
-malcolm
+malcolm --malcolm-target-url=http://localhost:11434/v1
 ```
 
 Then point your LLM tool to Malcolm:
 
 ```bash
-export OPENAI_BASE_URL=http://127.0.0.1:8900/v1
-export OPENAI_API_KEY=dummy  # Malcolm handles real auth
-claude --model openai/anthropic/claude-sonnet-4-20250514
+ANTHROPIC_AUTH_TOKEN=ollama \
+ANTHROPIC_BASE_URL=http://127.0.0.1:8900 \
+ANTHROPIC_API_KEY="" \
+claude --model qwen3-coder:30b
 ```
 
 Browse logged requests at [http://127.0.0.1:8900/logs](http://127.0.0.1:8900/logs).

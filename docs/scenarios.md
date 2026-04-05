@@ -12,8 +12,7 @@ In every scenario, Malcolm acts as a transparent proxy: the client talks to Malc
 Start Malcolm with Ollama as the target:
 
 ```bash
-MALCOLM_TARGET_URL=http://localhost:11434/v1 \
-uv run malcolm
+uv run malcolm --malcolm-target-url=http://localhost:11434/v1
 ```
 
 No API key is needed — Ollama runs locally without authentication.
@@ -60,9 +59,9 @@ OpenCode uses the `@ai-sdk/openai-compatible` provider to talk to any OpenAI-com
 Start Malcolm with OpenAI as the target:
 
 ```bash
-MALCOLM_TARGET_URL=https://api.openai.com/v1 \
-MALCOLM_TARGET_API_KEY=sk-...  \ # your OpenAI API key
-uv run malcolm
+uv run malcolm \
+  --malcolm-target-url=https://api.openai.com/v1 \
+  --malcolm-target-api-key=sk-...
 ```
 
 ### Using OpenAI in Claude Code
@@ -70,10 +69,10 @@ uv run malcolm
 Claude Code speaks the Anthropic protocol (`/v1/messages`), not the OpenAI protocol (`/v1/chat/completions`). To bridge this gap, enable Malcolm's protocol translation:
 
 ```bash
-MALCOLM_TARGET_URL=https://api.openai.com/v1 \
-MALCOLM_TARGET_API_KEY=sk-... \
-MALCOLM_TRANSLATE=anthropic_to_openai \
-uv run malcolm
+uv run malcolm \
+  --malcolm-target-url=https://api.openai.com/v1 \
+  --malcolm-target-api-key=sk-... \
+  --malcolm-translate=anthropic_to_openai
 ```
 
 Then point Claude Code at Malcolm as if it were an Anthropic backend:
@@ -116,9 +115,9 @@ If Malcolm is not managing the API key (i.e., `MALCOLM_TARGET_API_KEY` is unset)
 Start Malcolm with Anthropic as the target:
 
 ```bash
-MALCOLM_TARGET_URL=https://api.anthropic.com/v1 \
-MALCOLM_TARGET_API_KEY=sk-ant-... \
-uv run malcolm
+uv run malcolm \
+  --malcolm-target-url=https://api.anthropic.com/v1 \
+  --malcolm-target-api-key=sk-ant-...
 ```
 
 ### Claude Code + Anthropic
@@ -169,6 +168,7 @@ Regardless of the scenario, browse logged requests at [http://127.0.0.1:8900/log
 
 ## Tips
 
-- **API key placement**: If you set `MALCOLM_TARGET_API_KEY`, Malcolm injects the key into every forwarded request and clients can use dummy credentials. If you leave it unset, clients must provide their own valid key — Malcolm will forward it as-is.
+- **API key placement**: If you set `--malcolm-target-api-key`, Malcolm injects the key into every forwarded request and clients can use dummy credentials. If you leave it unset, clients must provide their own valid key — Malcolm will forward it as-is.
 - **Model names**: Use the exact model identifier the backend expects. For Ollama, this is the tag you pulled (e.g., `qwen3-coder:30b`). For OpenAI and Anthropic, these are the official model IDs.
-- **Port conflicts**: If port 8900 is taken, set `MALCOLM_PORT` to a different value and update the client URLs accordingly.
+- **Port conflicts**: If port 8900 is taken, use `--malcolm-port` to choose a different one and update the client URLs accordingly.
+- **CLI vs environment**: All `--malcolm-*` arguments have a corresponding `MALCOLM_*` environment variable. CLI arguments take precedence. Use environment variables (or a `.env` file) for persistent configuration and CLI arguments for one-off overrides.
