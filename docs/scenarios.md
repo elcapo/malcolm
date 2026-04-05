@@ -17,7 +17,7 @@ uv run malcolm --malcolm-target-url=http://localhost:11434/v1
 
 No API key is needed — Ollama runs locally without authentication.
 
-### Using Ollama in Claude Code
+### Using Ollama's models in Claude Code
 
 ```shell
 ANTHROPIC_AUTH_TOKEN=ollama \
@@ -28,7 +28,7 @@ claude --model qwen3-coder:30b
 
 Claude Code expects Anthropic-style auth variables. Setting `ANTHROPIC_AUTH_TOKEN` to a dummy value and clearing `ANTHROPIC_API_KEY` prevents it from trying to authenticate against Anthropic's servers. The model name must match one available in your Ollama instance.
 
-### Using Ollama in OpenCode
+### Using Ollama's models in OpenCode
 
 In your OpenCode configuration file (`opencode.json`):
 
@@ -64,7 +64,7 @@ uv run malcolm \
   --malcolm-target-api-key=sk-...
 ```
 
-### Using OpenAI in Claude Code
+### Using OpenAI's models in Claude Code
 
 Claude Code speaks the Anthropic protocol (`/v1/messages`), not the OpenAI protocol (`/v1/chat/completions`). To bridge this gap, enable Malcolm's protocol translation:
 
@@ -86,7 +86,7 @@ claude --model gpt-4.1
 
 Malcolm receives Anthropic-format requests, translates them to OpenAI format, forwards them, and translates the OpenAI responses back to Anthropic format before returning them to Claude Code.
 
-### Using OpenAI in OpenCode
+### Using OpenAI's models in OpenCode
 
 ```json
 {
@@ -120,7 +120,7 @@ uv run malcolm \
   --malcolm-target-api-key=sk-ant-...
 ```
 
-### Claude Code + Anthropic
+### Using Anthropic's models in Claude Code
 
 ```bash
 ANTHROPIC_BASE_URL=http://127.0.0.1:8900 \
@@ -138,7 +138,7 @@ ANTHROPIC_API_KEY=sk-ant-... \
 claude
 ```
 
-### OpenCode + Anthropic
+### Using Anthropic's models in OpenCode
 
 ```json
 {
