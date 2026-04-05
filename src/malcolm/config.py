@@ -11,3 +11,4 @@ class Settings(BaseSettings):
     storage_enabled: bool = True
     db_path: str = "malcolm.db"
     log_level: str = "info"
+    translate: str = ""

@@ -62,6 +62,15 @@ Provides both HTML and JSON interfaces for inspecting logged requests:
 - `/api/logs` — JSON API for programmatic access
 - `/api/logs/{id}` — JSON detail endpoint
 
+### `translate.py` — Protocol Translation
+
+Optional bidirectional translation between Anthropic and OpenAI API formats. Activated via `MALCOLM_TRANSLATE`. Contains pure functions for:
+
+- **Request translation**: Converts message formats, system prompts, tool definitions, and images between protocols.
+- **Response translation**: Converts response envelopes, stop reasons, and usage stats.
+- **Streaming translation**: State machines that translate SSE events line-by-line between OpenAI's `data:` format and Anthropic's `event:`/`data:` format.
+- **Path rewriting**: Maps `/v1/messages` ↔ `/v1/chat/completions`.
+
 ### `cli.py` — Entry Point
 
 Loads settings and starts uvicorn. Registered as the `malcolm` console script.
@@ -78,7 +87,7 @@ Loads settings and starts uvicorn. Registered as the `malcolm` console script.
 
 ## Design Principles
 
-- **Transparency**: Forward everything as-is. Don't transform, filter, or validate beyond what's needed to proxy. Use `extra="allow"` on models.
+- **Transparency**: Forward everything as-is by default. Don't transform, filter, or validate beyond what's needed to proxy. Use `extra="allow"` on models. When translation is enabled, convert between protocols faithfully without dropping fields.
 - **Observability**: Capture everything. Full request bodies, full responses, individual streaming chunks, timing, errors.
 - **Simplicity**: Minimal dependencies, single SQLite file, no external services needed.
 - **Optional persistence**: Storage can be disabled for pure pass-through monitoring via stdout logs.

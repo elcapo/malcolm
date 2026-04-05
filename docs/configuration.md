@@ -63,6 +63,18 @@ Path to the SQLite database file. Can be absolute or relative to the working dir
 
 Log level for console output. Valid values: `debug`, `info`, `warning`, `error`, `critical`.
 
+### `MALCOLM_TRANSLATE`
+
+**Default:** *(empty)*
+
+Enables protocol translation between Anthropic and OpenAI API formats. When set, malcolm translates requests and responses on the fly, allowing clients that speak one protocol to use backends that speak the other.
+
+Valid values:
+- `anthropic_to_openai` — Client sends Anthropic format (`/v1/messages`), backend expects OpenAI format (`/v1/chat/completions`). Useful for running Claude Code against OpenAI or Ollama backends.
+- `openai_to_anthropic` — Client sends OpenAI format (`/v1/chat/completions`), backend expects Anthropic format (`/v1/messages`). Useful for running OpenAI-compatible tools against Anthropic's API.
+
+When empty or unset, malcolm acts as a transparent proxy with no format conversion.
+
 ## Example `.env` file
 
 ```bash
@@ -72,4 +84,5 @@ MALCOLM_PORT=8900
 MALCOLM_STORAGE_ENABLED=true
 MALCOLM_DB_PATH=malcolm.db
 MALCOLM_LOG_LEVEL=info
+MALCOLM_TRANSLATE=
 ```

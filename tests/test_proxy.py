@@ -172,6 +172,100 @@ def test_forward_streaming(settings, null_storage):
     assert len(lines) >= 3  # 3 chunks + [DONE]
 
 
+def test_forward_with_anthropic_to_openai_translation(null_storage, monkeypatch):
+    """Send Anthropic-format request, verify OpenAI response translated back."""
+    monkeypatch.setenv("MALCOLM_TARGET_URL", "http://testserver")
+    monkeypatch.setenv("MALCOLM_TRANSLATE", "anthropic_to_openai")
+    translate_settings = Settings()
+
+    openai_response = {
+        "id": "chatcmpl-test",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4.1",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hi!"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+    }
+    backend = _make_fake_backend(response_body=openai_response)
+
+    app = FastAPI()
+
+    @app.post("/v1/messages")
+    async def proxy(request: Request):
+        body = await request.json()
+        transport = httpx.ASGITransport(app=backend)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await forward_request(body, request, client, translate_settings, null_storage)
+
+    test_client = TestClient(app)
+    # Send Anthropic-format request
+    resp = test_client.post(
+        "/v1/messages",
+        json={
+            "model": "gpt-4.1",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    # Should be Anthropic-format response
+    assert data["type"] == "message"
+    assert data["role"] == "assistant"
+    assert data["content"][0]["type"] == "text"
+    assert data["content"][0]["text"] == "Hi!"
+    assert data["stop_reason"] == "end_turn"
+
+
+def test_forward_with_openai_to_anthropic_translation(null_storage, monkeypatch):
+    """Send OpenAI-format request, verify Anthropic response translated back."""
+    monkeypatch.setenv("MALCOLM_TARGET_URL", "http://testserver")
+    monkeypatch.setenv("MALCOLM_TRANSLATE", "openai_to_anthropic")
+    translate_settings = Settings()
+
+    # Fake Anthropic backend
+    anthropic_backend = FastAPI()
+
+    @anthropic_backend.post("/v1/messages")
+    async def messages(request: Request):
+        return {
+            "id": "msg_test",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hello!"}],
+            "model": "claude-sonnet-4-20250514",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 2},
+        }
+
+    app = FastAPI()
+
+    @app.post("/v1/chat/completions")
+    async def proxy(request: Request):
+        body = await request.json()
+        transport = httpx.ASGITransport(app=anthropic_backend)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await forward_request(body, request, client, translate_settings, null_storage)
+
+    test_client = TestClient(app)
+    resp = test_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "claude-sonnet-4-20250514",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    # Should be OpenAI-format response
+    assert data["object"] == "chat.completion"
+    assert data["choices"][0]["message"]["content"] == "Hello!"
+    assert data["choices"][0]["finish_reason"] == "stop"
+    assert data["usage"]["total_tokens"] == 7
+
+
 def test_forward_backend_error(settings, null_storage):
     app = FastAPI()
 

@@ -45,8 +45,9 @@ All configuration is via environment variables:
 | `MALCOLM_STORAGE_ENABLED` | `true` | Enable/disable SQLite persistence |
 | `MALCOLM_DB_PATH` | `malcolm.db` | SQLite database file path |
 | `MALCOLM_LOG_LEVEL` | `info` | Log level |
+| `MALCOLM_TRANSLATE` | *(empty)* | Protocol translation: `anthropic_to_openai` or `openai_to_anthropic` |
 
-See [docs/configuration.md](docs/configuration.md) for details.
+See [docs/configuration.md](docs/configuration.md) for details and [docs/scenarios.md](docs/scenarios.md) for complete setup examples with Claude Code, OpenCode, and various backends (Anthropic, OpenAI, Ollama).
 
 ## How it works
 

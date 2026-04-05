@@ -10,6 +10,15 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from malcolm.storage import RequestRecord
+from malcolm.translate import (
+    anthropic_request_to_openai,
+    anthropic_response_to_openai,
+    anthropic_stream_to_openai_lines,
+    openai_request_to_anthropic,
+    openai_response_to_anthropic,
+    openai_stream_to_anthropic_events,
+    rewrite_path,
+)
 
 if TYPE_CHECKING:
     import httpx
@@ -91,23 +100,42 @@ async def forward_request(
         request_body=body,
     )
 
-    target_url = _build_target_url(settings.target_url, request.url.path)
+    translate = settings.translate
+
+    # Translate request if needed
+    if translate == "anthropic_to_openai":
+        forwarded_body = anthropic_request_to_openai(body)
+    elif translate == "openai_to_anthropic":
+        forwarded_body = openai_request_to_anthropic(body)
+    else:
+        forwarded_body = body
+
+    path = rewrite_path(request.url.path, translate)
+    target_url = _build_target_url(settings.target_url, path)
     headers = _build_headers(request, settings)
     start = time.monotonic()
 
     method = request.method
     try:
         if method in ("POST", "PUT", "PATCH"):
-            response = await client.request(method, target_url, json=body, headers=headers)
+            response = await client.request(method, target_url, json=forwarded_body, headers=headers)
         else:
             response = await client.request(method, target_url, headers=headers)
         record.status_code = response.status_code
         record.duration_ms = (time.monotonic() - start) * 1000
 
         try:
-            record.response_body = response.json()
+            response_data = response.json()
         except Exception:
-            record.response_body = {"raw": response.text}
+            response_data = {"raw": response.text}
+
+        # Translate response if needed
+        if translate == "anthropic_to_openai" and record.status_code == 200:
+            record.response_body = openai_response_to_anthropic(response_data, body.get("model", ""))
+        elif translate == "openai_to_anthropic" and record.status_code == 200:
+            record.response_body = anthropic_response_to_openai(response_data)
+        else:
+            record.response_body = response_data
 
         logger.info(
             "request=%s model=%s status=%s duration=%.0fms",
@@ -144,21 +172,45 @@ async def forward_request_stream(
         request_body=body,
     )
 
-    target_url = _build_target_url(settings.target_url, request.url.path)
+    translate = settings.translate
+
+    # Translate request if needed
+    if translate == "anthropic_to_openai":
+        forwarded_body = anthropic_request_to_openai(body)
+    elif translate == "openai_to_anthropic":
+        forwarded_body = openai_request_to_anthropic(body)
+    else:
+        forwarded_body = body
+
+    path = rewrite_path(request.url.path, translate)
+    target_url = _build_target_url(settings.target_url, path)
     headers = _build_headers(request, settings)
     start = time.monotonic()
 
     async def _stream_generator():
         chunks: list[dict] = []
+        translate_state: dict = {}
         try:
             async with client.stream(
-                "POST", target_url, json=body, headers=headers
+                "POST", target_url, json=forwarded_body, headers=headers
             ) as response:
                 record.status_code = response.status_code
 
                 async for line in response.aiter_lines():
-                    yield line + "\n"
+                    if translate == "anthropic_to_openai":
+                        # Backend returns OpenAI SSE → translate to Anthropic SSE
+                        translated_events = openai_stream_to_anthropic_events(line, translate_state)
+                        for event_line in translated_events:
+                            yield event_line + "\n"
+                    elif translate == "openai_to_anthropic":
+                        # Backend returns Anthropic SSE → translate to OpenAI SSE
+                        translated_lines = anthropic_stream_to_openai_lines(line, translate_state)
+                        for tl in translated_lines:
+                            yield tl + "\n"
+                    else:
+                        yield line + "\n"
 
+                    # Accumulate raw backend chunks for storage
                     if line.startswith("data: ") and line.strip() != "data: [DONE]":
                         try:
                             chunk = json.loads(line[6:])
