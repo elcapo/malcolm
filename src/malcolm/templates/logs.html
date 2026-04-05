@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>malcolm - logs</title>
+    <style>
+        body {
+            background: #1f2328;
+            color: #e6e8eb;
+            font-family: monospace;
+            margin: 2rem;
+        }
+
+        h1 {
+            color: #7aa2f7;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+
+        th, td {
+            padding: 0.6rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid #2d333b; /* línea sutil */
+        }
+
+        th {
+            color: #9aa5b1; /* gris azulado en vez de rojo */
+            font-weight: 600;
+        }
+
+        a {
+            color: #7aa2f7;
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        .err td {
+            color: #f38ba8; /* rojo suave */
+        }
+
+        .empty {
+            color: #8b949e;
+            padding: 2rem;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>malcolm</h1>
+    {% if rows %}
+    <table>
+        <tr>
+            <th>ID</th>
+            <th>Time</th>
+            <th>Model</th>
+            <th>Stream</th>
+            <th>Status</th>
+            <th>Duration</th>
+            <th></th>
+        </tr>
+        {% for r in rows %}
+        <tr class="{{ 'ok' if r.status_code == 200 else 'err' }}">
+            <td><a href="/logs/{{ r.id }}">{{ r.id[:8] }}...</a></td>
+            <td>{{ r.timestamp[:19] }}</td>
+            <td>{{ r.model or '' }}</td>
+            <td>{{ 'SSE' if r.stream else '' }}</td>
+            <td>{{ r.status_code or '-' }}</td>
+            <td>{{ '%.0fms' % r.duration_ms if r.duration_ms else '-' }}</td>
+            <td>{{ '!' if r.error else '' }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% else %}
+    <p class="empty">No requests logged yet.</p>
+    {% endif %}
+</body>
+</html>
