@@ -47,6 +47,11 @@ class Storage:
         await self._db.execute(_CREATE_TABLE)
         await self._db.commit()
 
+    async def refresh(self) -> None:
+        """End any implicit transaction to see latest writes from other connections."""
+        assert self._db is not None
+        await self._db.commit()
+
     async def close(self) -> None:
         if self._db:
             await self._db.close()
