@@ -35,7 +35,33 @@ ANTHROPIC_API_KEY="" \
 claude --model qwen3-coder:30b
 ```
 
-Browse logged requests at [http://127.0.0.1:8900/logs](http://127.0.0.1:8900/logs).
+Browse logged requests at [http://127.0.0.1:8900/logs](http://127.0.0.1:8900/logs), or use the terminal UI:
+
+```bash
+malcolm tui                          # uses default malcolm.db
+malcolm tui --db-path ./other.db     # use a specific database
+```
+
+## Terminal UI
+
+Malcolm includes a TUI for browsing logs directly from the terminal, without a browser.
+
+Three-level drill-down: **Sessions** → **Messages** → **Message detail** (full JSON with syntax highlighting).
+
+Sessions are automatically grouped by `session_id` from the request metadata. Each session shows the model, number of user messages, and timestamp.
+
+| Key | Action |
+|---|---|
+| `↑` / `k` | Move up |
+| `↓` / `j` | Move down |
+| `→` / `l` / `Enter` | Open / select |
+| `←` / `h` / `Esc` | Go back |
+| `r` | Reload (returns to sessions and refreshes) |
+| `w` | Toggle word wrap (detail view) |
+| `p` | Toggle dark/light theme |
+| `q` | Quit |
+
+The TUI reads directly from the SQLite database, so it works while the proxy is running. Press `r` to refresh and see new sessions.
 
 ## Configuration
 

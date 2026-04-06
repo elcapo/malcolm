@@ -6,6 +6,18 @@ from datetime import datetime, timezone
 
 import aiosqlite
 
+def _extract_session_id(request_body: str) -> str:
+    """Extract session_id from request metadata, or return 'unknown'."""
+    try:
+        body = json.loads(request_body) if isinstance(request_body, str) else request_body
+        user_id = body.get("metadata", {}).get("user_id", "")
+        if isinstance(user_id, str) and user_id.startswith("{"):
+            return json.loads(user_id).get("session_id", "unknown")
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return "unknown"
+
+
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS requests (
     id TEXT PRIMARY KEY,
@@ -47,6 +59,11 @@ class Storage:
         await self._db.execute(_CREATE_TABLE)
         await self._db.commit()
 
+    async def refresh(self) -> None:
+        """End any implicit transaction to see latest writes from other connections."""
+        assert self._db is not None
+        await self._db.commit()
+
     async def close(self) -> None:
         if self._db:
             await self._db.close()
@@ -74,6 +91,35 @@ class Storage:
             ),
         )
         await self._db.commit()
+
+    async def list_sessions(self, limit: int = 50) -> list[dict]:
+        """List sessions grouped by session_id from request metadata."""
+        assert self._db is not None
+        self._db.row_factory = aiosqlite.Row
+        cursor = await self._db.execute(
+            "SELECT id, timestamp, model, request_body FROM requests "
+            "ORDER BY timestamp DESC LIMIT 1000",
+        )
+        rows = await cursor.fetchall()
+
+        sessions: dict[str, dict] = {}
+        for row in rows:
+            row_dict = dict(row)
+            session_id = _extract_session_id(row_dict["request_body"])
+            if session_id not in sessions:
+                body = json.loads(row_dict["request_body"]) if isinstance(row_dict["request_body"], str) else row_dict["request_body"]
+                messages = body.get("messages", [])
+                user_count = sum(1 for m in messages if m.get("role") == "user")
+                sessions[session_id] = {
+                    "session_id": session_id,
+                    "last_request_id": row_dict["id"],
+                    "timestamp": row_dict["timestamp"],
+                    "model": row_dict["model"],
+                    "user_messages": user_count,
+                }
+
+        result = sorted(sessions.values(), key=lambda s: s["timestamp"], reverse=True)
+        return result[:limit]
 
     async def list_recent(self, limit: int = 50) -> list[dict]:
         assert self._db is not None

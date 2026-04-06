@@ -1,4 +1,5 @@
 import argparse
+import sys
 
 import uvicorn
 
@@ -25,7 +26,20 @@ def _parse_args() -> dict:
     return {k: v for k, v in vars(args).items() if v is not None}
 
 
+def _parse_tui_args() -> str | None:
+    parser = argparse.ArgumentParser(prog="malcolm tui", description="TUI log viewer")
+    parser.add_argument("--db-path", default=None, help="Path to the SQLite database")
+    args = parser.parse_args(sys.argv[2:])
+    return args.db_path
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "tui":
+        from malcolm.tui import run_tui
+
+        run_tui(db_path=_parse_tui_args())
+        return
+
     overrides = _parse_args()
     settings = Settings(**overrides)
     app = create_app(settings)
