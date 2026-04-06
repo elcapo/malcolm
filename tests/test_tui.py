@@ -9,7 +9,7 @@ from malcolm.tui import (
     DetailScreen,
     MalcolmTUI,
     MessagesScreen,
-    RequestsScreen,
+    SessionsScreen,
     _assemble_anthropic_chunks,
     _extract_assistant_message,
 )
@@ -38,6 +38,7 @@ async def populated_storage(storage):
                 {"role": "system", "content": "You are helpful."},
                 {"role": "user", "content": "Hello!"},
             ],
+            "metadata": {"user_id": '{"session_id": "sess-001"}'},
         },
         response_body={
             "id": "resp-001",
@@ -66,6 +67,7 @@ async def populated_storage(storage):
         request_body={
             "model": "gpt-4o",
             "messages": [{"role": "user", "content": "Stream test"}],
+            "metadata": {"user_id": '{"session_id": "sess-001"}'},
         },
         response_chunks=[{"choices": [{"delta": {"content": "chunk"}}]}],
         status_code=200,
@@ -92,6 +94,7 @@ async def anthropic_storage(storage):
                     {"type": "text", "text": "hello"},
                 ]},
             ],
+            "metadata": {"user_id": '{"session_id": "sess-anth-001"}'},
         },
         response_body={
             "model": "claude-opus-4-6",
@@ -114,6 +117,7 @@ async def anthropic_storage(storage):
         request_body={
             "model": "claude-opus-4-6",
             "messages": [{"role": "user", "content": "stream me"}],
+            "metadata": {"user_id": '{"session_id": "sess-anth-002"}'},
         },
         response_chunks=[
             {"type": "message_start", "message": {"role": "assistant"}},
@@ -136,6 +140,7 @@ async def anthropic_storage(storage):
         request_body={
             "model": "claude-opus-4-6",
             "messages": [{"role": "user", "content": "read a file"}],
+            "metadata": {"user_id": '{"session_id": "sess-anth-003"}'},
         },
         response_body={
             "id": "resp-tool",
@@ -246,13 +251,14 @@ async def test_tui_app_creates_with_db(tmp_path):
     assert app._db_path == db_path
 
 
-async def test_requests_screen_shows_records(populated_storage):
+async def test_sessions_screen_shows_sessions(populated_storage):
     app = MalcolmTUI(db_path=populated_storage._db_path)
     async with app.run_test() as pilot:
         screen = app.screen
-        assert isinstance(screen, RequestsScreen)
+        assert isinstance(screen, SessionsScreen)
         table = screen.query_one("DataTable")
-        assert table.row_count == 2
+        # Both records share sess-001, so 1 session row
+        assert table.row_count == 1
 
 
 async def test_requests_screen_empty_db(storage):
@@ -265,15 +271,14 @@ async def test_requests_screen_empty_db(storage):
 async def test_drill_into_messages(populated_storage):
     app = MalcolmTUI(db_path=populated_storage._db_path)
     async with app.run_test() as pilot:
-        # First row is req-002 (streaming), second is req-001 (non-streaming)
-        await pilot.press("j")  # move to req-001
+        # One session row — enters the latest request (req-002, streaming)
         await pilot.press("enter")
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, MessagesScreen)
         table = screen.query_one("DataTable")
-        # 2 request messages + 1 assistant response = 3
-        assert table.row_count == 3
+        # req-002 has 1 request message + 1 assembled assistant response = 2
+        assert table.row_count == 2
 
 
 async def test_drill_into_detail(populated_storage):
@@ -294,7 +299,7 @@ async def test_back_navigation_escape(populated_storage):
         assert isinstance(app.screen, MessagesScreen)
         await pilot.press("escape")
         await pilot.pause()
-        assert isinstance(app.screen, RequestsScreen)
+        assert isinstance(app.screen, SessionsScreen)
 
 
 async def test_back_navigation_h(populated_storage):
@@ -305,7 +310,7 @@ async def test_back_navigation_h(populated_storage):
         assert isinstance(app.screen, MessagesScreen)
         await pilot.press("h")
         await pilot.pause()
-        assert isinstance(app.screen, RequestsScreen)
+        assert isinstance(app.screen, SessionsScreen)
 
 
 async def test_vim_navigation_l_selects(populated_storage):
@@ -397,8 +402,7 @@ async def test_system_reminder_filtered_from_preview(anthropic_storage):
 async def test_messages_have_role_styles(populated_storage):
     app = MalcolmTUI(db_path=populated_storage._db_path)
     async with app.run_test() as pilot:
-        await pilot.press("j")  # move to req-001
-        await pilot.press("enter")
+        await pilot.press("enter")  # enter session
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, MessagesScreen)
@@ -413,7 +417,6 @@ async def test_messages_have_role_styles(populated_storage):
             role_texts.append(str(role_cell))
         assert "user" in role_texts
         assert "assistant" in role_texts
-        assert "system" in role_texts
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +433,11 @@ async def test_reload_picks_up_new_records(storage):
         record = RequestRecord(
             id="req-new",
             model="gpt-4o",
-            request_body={"model": "gpt-4o", "messages": []},
+            request_body={
+                "model": "gpt-4o",
+                "messages": [],
+                "metadata": {"user_id": '{"session_id": "sess-new"}'},
+            },
             status_code=200,
             duration_ms=100.0,
         )
@@ -450,13 +457,13 @@ async def test_reload_picks_up_new_records(storage):
 async def test_subtitle_updates_on_back(populated_storage):
     app = MalcolmTUI(db_path=populated_storage._db_path)
     async with app.run_test() as pilot:
-        assert app.sub_title == "Request Log"
+        assert app.sub_title == "Sessions"
         await pilot.press("enter")
         await pilot.pause()
         assert "gpt-4o" in app.sub_title
         await pilot.press("escape")
         await pilot.pause()
-        assert app.sub_title == "Request Log"
+        assert app.sub_title == "Sessions"
 
 
 # ---------------------------------------------------------------------------
@@ -466,13 +473,12 @@ async def test_subtitle_updates_on_back(populated_storage):
 async def test_detail_shows_json(populated_storage):
     app = MalcolmTUI(db_path=populated_storage._db_path)
     async with app.run_test() as pilot:
-        await pilot.press("j")  # req-001
-        await pilot.press("enter")
+        await pilot.press("enter")  # enter session
         await pilot.pause()
-        await pilot.press("enter")  # first message (system)
+        await pilot.press("enter")  # first message
         await pilot.pause()
         assert isinstance(app.screen, DetailScreen)
-        assert "system" in app.sub_title.lower()
+        assert "user" in app.sub_title.lower()
 
 
 async def test_detail_back_to_messages(populated_storage):

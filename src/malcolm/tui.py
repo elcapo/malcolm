@@ -87,8 +87,8 @@ class VimDataTable(DataTable):
         self.action_select_cursor()
 
 
-class RequestsScreen(Screen):
-    """List of logged API requests."""
+class SessionsScreen(Screen):
+    """List of sessions."""
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -96,39 +96,35 @@ class RequestsScreen(Screen):
         yield HintBar(_HINT_NAV)
 
     async def on_mount(self) -> None:
-        self.app.sub_title = "Request Log"
-        await self._load_records()
+        self.app.sub_title = "Sessions"
+        await self._load_sessions()
 
-    async def _load_records(self) -> None:
+    async def _load_sessions(self) -> None:
         await self.app.storage.refresh()
         table = self.query_one(VimDataTable)
         table.clear(columns=True)
-        table.add_columns("Time", "Model", "Status", "Duration", "Stream")
-        records = await self.app.storage.list_recent(100)
-        self._records = records
-        for r in records:
-            duration = f"{r['duration_ms']:.0f}ms" if r.get("duration_ms") else "-"
-            stream = "✓" if r.get("stream") else ""
-            status = str(r.get("status_code") or "-")
+        table.add_columns("Time", "Model", "Messages", "Session")
+        sessions = await self.app.storage.list_sessions(100)
+        self._sessions = sessions
+        for s in sessions:
             table.add_row(
-                r["timestamp"][:19],
-                r.get("model") or "-",
-                status,
-                duration,
-                stream,
-                key=r["id"],
+                s["timestamp"][:19],
+                s.get("model") or "-",
+                str(s["user_messages"]),
+                s["session_id"][:12] + "…",
+                key=s["last_request_id"],
             )
-        if not records:
-            table.add_row("-", "No requests logged", "-", "-", "")
+        if not sessions:
+            table.add_row("-", "No sessions", "-", "-")
 
     async def action_reload(self) -> None:
-        await self._load_records()
+        await self._load_sessions()
 
     def on_screen_resume(self) -> None:
-        self.app.sub_title = "Request Log"
+        self.app.sub_title = "Sessions"
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if not self._records:
+        if not self._sessions:
             return
         self.app.push_screen(MessagesScreen(event.row_key.value))
 
@@ -196,17 +192,21 @@ class MessagesScreen(Screen):
         for i, msg in enumerate(messages):
             content = msg.get("content") or ""
             if isinstance(content, list):
-                parts = []
-                for item in content:
+                # Take the last non-system-reminder text block
+                last_text = ""
+                for item in reversed(content):
                     if isinstance(item, dict):
                         text = item.get("text", "")
                         if text and not text.lstrip().startswith("<system-reminder>"):
-                            parts.append(text)
+                            last_text = text
+                            break
                         elif item.get("type") and item["type"] != "text":
-                            parts.append(f"[{item['type']}]")
-                    else:
-                        parts.append(str(item))
-                content = " ".join(parts)
+                            last_text = f"[{item['type']}]"
+                            break
+                    elif item:
+                        last_text = str(item)
+                        break
+                content = last_text
             if not content and msg.get("tool_calls"):
                 names = [tc.get("function", {}).get("name", "?") for tc in msg["tool_calls"]]
                 content = f"[tool: {', '.join(names)}]"
@@ -227,8 +227,13 @@ class MessagesScreen(Screen):
                 key=str(i),
             )
 
-    async def action_reload(self) -> None:
-        await self._load_messages()
+    async def on_key(self, event) -> None:
+        if event.key == "r":
+            event.prevent_default()
+            event.stop()
+            while not isinstance(self.app.screen, SessionsScreen):
+                self.app.pop_screen()
+            await self.app.screen.action_reload()
 
     def on_screen_resume(self) -> None:
         if hasattr(self, "_sub_title"):
@@ -281,11 +286,17 @@ class DetailScreen(Screen):
         log.wrap = self._wrap
         self._render_message()
 
-    def action_reload(self) -> None:
-        self._render_message()
-
     def action_back(self) -> None:
         self.app.pop_screen()
+
+    async def on_key(self, event) -> None:
+        if event.key == "r":
+            event.prevent_default()
+            event.stop()
+            # Pop back to sessions and reload
+            while not isinstance(self.app.screen, SessionsScreen):
+                self.app.pop_screen()
+            await self.app.screen.action_reload()
 
     def action_scroll_down(self) -> None:
         self.query_one(RichLog).scroll_down()
@@ -321,7 +332,7 @@ class MalcolmTUI(App):
     async def on_mount(self) -> None:
         self.storage = Storage(self._db_path)
         await self.storage.init()
-        self.push_screen(RequestsScreen())
+        self.push_screen(SessionsScreen())
 
     async def on_unmount(self) -> None:
         if hasattr(self, "storage"):
