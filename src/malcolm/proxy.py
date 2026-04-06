@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from malcolm.formats import assemble_openai_chunks
 from malcolm.storage import RequestRecord
 from malcolm.translate import (
     anthropic_request_to_openai,
@@ -229,7 +230,7 @@ async def forward_request_stream(
             record.duration_ms = (time.monotonic() - start) * 1000
             if chunks:
                 record.response_chunks = chunks
-                record.response_body = _assemble_chunks(chunks)
+                record.response_body = assemble_openai_chunks(chunks)
             logger.info(
                 "request=%s model=%s stream=true chunks=%d duration=%.0fms",
                 record.id,
@@ -250,67 +251,3 @@ async def forward_request_stream(
     )
 
 
-def _assemble_chunks(chunks: list[dict]) -> dict:
-    """Assemble streaming chunks into a single chat.completion-like response."""
-    if not chunks:
-        return {}
-
-    first = chunks[0]
-    last = chunks[-1]
-
-    assembled_content = ""
-    tool_calls_by_index: dict[int, dict] = {}
-    finish_reason = None
-
-    for chunk in chunks:
-        for choice in chunk.get("choices", []):
-            delta = choice.get("delta", {})
-
-            content = delta.get("content")
-            if content:
-                assembled_content += content
-
-            if delta.get("tool_calls"):
-                for tc in delta["tool_calls"]:
-                    idx = tc.get("index", 0)
-                    if idx not in tool_calls_by_index:
-                        tool_calls_by_index[idx] = {
-                            "id": tc.get("id", ""),
-                            "type": tc.get("type", "function"),
-                            "function": {"name": "", "arguments": ""},
-                        }
-                    if "function" in tc:
-                        if tc["function"].get("name"):
-                            tool_calls_by_index[idx]["function"]["name"] = tc["function"]["name"]
-                        if tc["function"].get("arguments"):
-                            tool_calls_by_index[idx]["function"]["arguments"] += tc["function"]["arguments"]
-                    if tc.get("id"):
-                        tool_calls_by_index[idx]["id"] = tc["id"]
-
-            fr = choice.get("finish_reason")
-            if fr:
-                finish_reason = fr
-
-    message: dict = {"role": "assistant", "content": assembled_content or None}
-    if tool_calls_by_index:
-        message["tool_calls"] = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index)]
-
-    result: dict = {
-        "id": first.get("id", ""),
-        "object": "chat.completion",
-        "created": first.get("created", 0),
-        "model": first.get("model", ""),
-        "choices": [
-            {
-                "index": 0,
-                "message": message,
-                "finish_reason": finish_reason,
-            }
-        ],
-    }
-
-    usage = last.get("usage")
-    if usage:
-        result["usage"] = usage
-
-    return result

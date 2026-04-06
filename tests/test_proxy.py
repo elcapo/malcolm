@@ -6,7 +6,8 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from malcolm.config import Settings
-from malcolm.proxy import _assemble_chunks, _build_target_url, forward_request, forward_request_stream
+from malcolm.formats import assemble_openai_chunks
+from malcolm.proxy import _build_target_url, forward_request, forward_request_stream
 from malcolm.storage import NullStorage, RequestRecord
 
 
@@ -37,11 +38,11 @@ def test_build_target_url(base_url, path, expected):
     assert _build_target_url(base_url, path) == expected
 
 
-def test_assemble_chunks_empty():
-    assert _assemble_chunks([]) == {}
+def testassemble_openai_chunks_empty():
+    assert assemble_openai_chunks([]) == {}
 
 
-def test_assemble_chunks_text():
+def testassemble_openai_chunks_text():
     chunks = [
         {"id": "c1", "created": 100, "model": "gpt-4", "choices": [{"delta": {"role": "assistant", "content": ""}, "index": 0}]},
         {"id": "c1", "created": 100, "model": "gpt-4", "choices": [{"delta": {"content": "Hello"}, "index": 0}]},
@@ -49,7 +50,7 @@ def test_assemble_chunks_text():
         {"id": "c1", "created": 100, "model": "gpt-4", "choices": [{"delta": {}, "index": 0, "finish_reason": "stop"}], "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}},
     ]
 
-    result = _assemble_chunks(chunks)
+    result = assemble_openai_chunks(chunks)
 
     assert result["id"] == "c1"
     assert result["model"] == "gpt-4"
@@ -58,7 +59,7 @@ def test_assemble_chunks_text():
     assert result["usage"]["total_tokens"] == 7
 
 
-def test_assemble_chunks_tool_calls():
+def testassemble_openai_chunks_tool_calls():
     chunks = [
         {"id": "c1", "created": 100, "model": "gpt-4", "choices": [{"delta": {"role": "assistant", "tool_calls": [{"index": 0, "id": "tc1", "type": "function", "function": {"name": "get_weather", "arguments": ""}}]}, "index": 0}]},
         {"id": "c1", "created": 100, "model": "gpt-4", "choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"city":'}}]}, "index": 0}]},
@@ -66,7 +67,7 @@ def test_assemble_chunks_tool_calls():
         {"id": "c1", "created": 100, "model": "gpt-4", "choices": [{"delta": {}, "index": 0, "finish_reason": "tool_calls"}]},
     ]
 
-    result = _assemble_chunks(chunks)
+    result = assemble_openai_chunks(chunks)
 
     tc = result["choices"][0]["message"]["tool_calls"][0]
     assert tc["id"] == "tc1"
