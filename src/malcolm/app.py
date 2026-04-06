@@ -5,14 +5,12 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import Response
 
 from malcolm.config import Settings
-from fastapi.responses import Response
 
 from malcolm.proxy import forward_request, forward_request_stream
 from malcolm.storage import NullStorage, Storage
-from malcolm.viewer import router as viewer_router
 
 logger = logging.getLogger("malcolm")
 
@@ -52,7 +50,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await app.state.storage.close()
 
     app = FastAPI(title="malcolm", lifespan=lifespan)
-    app.include_router(viewer_router)
 
     @app.head("/")
     async def health_check():
