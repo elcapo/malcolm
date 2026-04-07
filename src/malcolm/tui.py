@@ -135,10 +135,11 @@ class GroupsScreen(Screen):
     def _render_table(self) -> None:
         table = self.query_one(VimDataTable)
         table.clear(columns=True)
-        table.add_columns("Model", "First message", "Last message", "Requests")
+        table.add_columns("Session", "Model", "First message", "Last message", "Requests")
 
         for g in self._groups:
             table.add_row(
+                Text(g.session_id[:13], style="dim"),
                 Text(g.model or "-", style="bold cyan"),
                 g.earliest_timestamp[:19],
                 g.latest_timestamp[:19],
@@ -147,7 +148,7 @@ class GroupsScreen(Screen):
             )
 
         if not self._groups:
-            table.add_row("-", "-", "No sessions", "-")
+            table.add_row("-", "-", "-", "No sessions", "-")
 
         page_info = f"page {self._page + 1}"
         if not self._has_more and self._page >= len(self._pages) - 1:

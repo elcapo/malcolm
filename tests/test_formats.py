@@ -411,6 +411,21 @@ class TestSessionHints:
         body = {"system": "Be helpful", "messages": []}
         assert extract_session_hint(body) is None
 
+    def test_opencode_session_affinity_header(self):
+        body = {"system": "Be helpful", "messages": []}
+        headers = {"x-session-affinity": "oc-sess-42"}
+        assert extract_session_hint(body, headers) == "oc-sess-42"
+
+    def test_opencode_header_takes_precedence_over_body(self):
+        body = {"system": "Be helpful", "messages": [], "metadata": {"session_id": "body-sess"}}
+        headers = {"x-session-affinity": "header-sess"}
+        assert extract_session_hint(body, headers) == "header-sess"
+
+    def test_no_headers_falls_back_to_body(self):
+        body = {"system": "Be helpful", "messages": [], "metadata": {"session_id": "body-sess"}}
+        assert extract_session_hint(body) == "body-sess"
+        assert extract_session_hint(body, {}) == "body-sess"
+
 
 # ---------------------------------------------------------------------------
 # Grouping
@@ -461,3 +476,18 @@ class TestGroupRecords:
         hinted = [g for g in groups if g.session_id == "s1"]
         assert len(hinted) == 1
         assert hinted[0].record_ids == ["r1", "r3"]
+
+    def test_group_by_opencode_header(self):
+        records = [
+            {"id": "r1", "timestamp": "2026-01-01T00:10:00", "model": "claude-3-5-sonnet",
+             "request_body": {"system": "Be helpful", "messages": []},
+             "request_headers": {"x-session-affinity": "oc-sess-1", "user-agent": "ai-sdk/anthropic/2.0.45"}},
+            {"id": "r2", "timestamp": "2026-01-01T00:00:00", "model": "claude-3-5-sonnet",
+             "request_body": {"system": "Be helpful", "messages": []},
+             "request_headers": {"x-session-affinity": "oc-sess-1", "user-agent": "ai-sdk/anthropic/2.0.45"}},
+        ]
+        groups = group_records(records)
+        assert len(groups) == 1
+        assert groups[0].session_id == "oc-sess-1"
+        assert groups[0].record_ids == ["r1", "r2"]
+        assert groups[0].request_count == 2
