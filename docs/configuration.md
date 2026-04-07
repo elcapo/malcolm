@@ -58,7 +58,7 @@ The port malcolm listens on.
 
 **Default:** `true`
 
-When `true`, malcolm stores all requests and responses in a SQLite database. When `false`, malcolm still proxies everything and logs to stdout, but doesn't persist to disk. The log viewer will show no records when storage is disabled.
+When `true`, malcolm stores all requests and responses in a SQLite database. When `false`, malcolm still proxies everything and logs to stdout, but doesn't persist to disk. The TUI will show no records when storage is disabled.
 
 ### `MALCOLM_DB_PATH`
 

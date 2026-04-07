@@ -24,9 +24,13 @@ flowchart LR
 
 Uses `pydantic-settings` to load configuration from environment variables. All variables are prefixed with `MALCOLM_`. See [configuration.md](configuration.md) for details.
 
-### `models.py` — Pydantic Models
+### `models.py` — Canonical Models
 
-Minimal OpenAI-compatible models with `extra="allow"` to be transparent. malcolm doesn't validate the full OpenAI spec — it accepts any fields and passes them through. This ensures compatibility with new API features without code changes.
+Format-agnostic dataclasses (`Message`, `ToolCall`, `Conversation`) that represent normalized LLM request/response data. Used by the TUI and any other consumer that needs to display or inspect stored data without caring about the wire format.
+
+### `formats.py` — Format Detection and Normalization
+
+Dispatch-based layer that converts raw stored data into canonical models. Each supported protocol (OpenAI, Anthropic) has a parser class that implements format detection (`can_parse_*`) and extraction. The `parse_record()` function iterates over parsers to find the right one for each record. Also provides `assemble_openai_chunks()` used by the proxy to assemble streaming chunks for storage.
 
 ### `storage.py` — Persistence
 
@@ -51,16 +55,11 @@ Key behaviors:
 
 Wires everything together:
 - Lifespan management (httpx client, storage initialization/cleanup)
-- Route registration: `/v1/chat/completions`, `/chat/completions`, `/v1/models`
-- Mounts the viewer router
+- Route registration: catch-all proxy that forwards any unmatched route to the backend
 
-### `viewer.py` — Log Inspector
+### `tui.py` — Terminal Log Viewer
 
-Provides both HTML and JSON interfaces for inspecting logged requests:
-- `/logs` — HTML list of recent requests
-- `/logs/{id}` — HTML detail view with full request/response
-- `/api/logs` — JSON API for programmatic access
-- `/api/logs/{id}` — JSON detail endpoint
+A Textual-based TUI for browsing logged requests from the terminal. Three-level drill-down: **Requests** → **Messages** → **Message detail** (full JSON with syntax highlighting). Vim-style keybindings. Consumes canonical `Conversation`/`Message` objects from `formats.py`, with no format-specific logic.
 
 ### `translate.py` — Protocol Translation
 
@@ -87,7 +86,7 @@ Loads settings and starts uvicorn. Registered as the `malcolm` console script.
 
 ## Design Principles
 
-- **Transparency**: Forward everything as-is by default. Don't transform, filter, or validate beyond what's needed to proxy. Use `extra="allow"` on models. When translation is enabled, convert between protocols faithfully without dropping fields.
+- **Transparency**: Forward everything as-is by default. Don't transform, filter, or validate beyond what's needed to proxy. When translation is enabled, convert between protocols faithfully without dropping fields. Raw data is stored as-is; normalization happens at read time (in `formats.py`), not at write time.
 - **Observability**: Capture everything. Full request bodies, full responses, individual streaming chunks, timing, errors.
 - **Simplicity**: Minimal dependencies, single SQLite file, no external services needed.
 - **Optional persistence**: Storage can be disabled for pure pass-through monitoring via stdout logs.

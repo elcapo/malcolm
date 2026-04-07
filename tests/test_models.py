@@ -1,72 +1,46 @@
-from malcolm.models import ChatCompletionRequest, ChatCompletionResponse, ChatMessage
+from malcolm.models import Conversation, Message, ToolCall
 
 
-def test_chat_message_basic():
-    msg = ChatMessage(role="user", content="hello")
+def test_message_text_only():
+    msg = Message(role="user", text="hello")
     assert msg.role == "user"
-    assert msg.content == "hello"
+    assert msg.text == "hello"
+    assert msg.tool_calls == []
+    assert msg.tool_result is None
 
 
-def test_chat_message_extra_fields():
-    msg = ChatMessage(role="assistant", content="hi", custom_field="value")
-    assert msg.custom_field == "value"
+def test_message_with_tool_calls():
+    tc = ToolCall(name="read_file", arguments='{"path": "foo.py"}', id="call_1")
+    msg = Message(role="assistant", tool_calls=[tc])
+    assert msg.tool_calls[0].name == "read_file"
+    assert msg.tool_calls[0].id == "call_1"
 
 
-def test_chat_message_multimodal_content():
-    content = [
-        {"type": "text", "text": "What's in this image?"},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+def test_message_with_tool_result():
+    msg = Message(role="tool", tool_result="file contents here")
+    assert msg.tool_result == "file contents here"
+    assert msg.text is None
+
+
+def test_message_raw_preserved():
+    raw = {"role": "user", "content": "hello"}
+    msg = Message(role="user", text="hello", raw=raw)
+    assert msg.raw == raw
+
+
+def test_conversation_defaults():
+    conv = Conversation()
+    assert conv.messages == []
+    assert conv.model == ""
+    assert conv.stream is False
+    assert conv.status_code is None
+
+
+def test_conversation_with_messages():
+    msgs = [
+        Message(role="user", text="hello"),
+        Message(role="assistant", text="hi"),
     ]
-    msg = ChatMessage(role="user", content=content)
-    assert isinstance(msg.content, list)
-    assert len(msg.content) == 2
-
-
-def test_chat_completion_request_minimal():
-    req = ChatCompletionRequest(
-        model="gpt-4",
-        messages=[ChatMessage(role="user", content="hello")],
-    )
-    assert req.model == "gpt-4"
-    assert req.stream is False
-    assert len(req.messages) == 1
-
-
-def test_chat_completion_request_extra_fields():
-    req = ChatCompletionRequest(
-        model="gpt-4",
-        messages=[ChatMessage(role="user", content="hello")],
-        temperature=0.7,
-        max_tokens=100,
-        top_p=0.9,
-    )
-    assert req.temperature == 0.7
-    assert req.max_tokens == 100
-
-
-def test_chat_completion_request_stream():
-    req = ChatCompletionRequest(
-        model="gpt-4",
-        messages=[ChatMessage(role="user", content="hello")],
-        stream=True,
-    )
-    assert req.stream is True
-
-
-def test_chat_completion_response():
-    resp = ChatCompletionResponse(
-        id="chatcmpl-123",
-        created=1700000000,
-        model="gpt-4",
-        choices=[
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": "Hello!"},
-                "finish_reason": "stop",
-            }
-        ],
-        usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-    )
-    assert resp.id == "chatcmpl-123"
-    assert resp.choices[0].message.content == "Hello!"
-    assert resp.usage.total_tokens == 15
+    conv = Conversation(messages=msgs, model="gpt-4", timestamp="2026-01-01T00:00:00")
+    assert len(conv.messages) == 2
+    assert conv.model == "gpt-4"

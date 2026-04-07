@@ -35,7 +35,7 @@ ANTHROPIC_API_KEY="" \
 claude --model qwen3-coder:30b
 ```
 
-Browse logged requests at [http://127.0.0.1:8900/logs](http://127.0.0.1:8900/logs), or use the terminal UI:
+Browse logged requests with the terminal UI:
 
 ```bash
 malcolm tui                          # uses default malcolm.db
@@ -46,9 +46,9 @@ malcolm tui --db-path ./other.db     # use a specific database
 
 Malcolm includes a TUI for browsing logs directly from the terminal, without a browser.
 
-Three-level drill-down: **Sessions** → **Messages** → **Message detail** (full JSON with syntax highlighting).
+Three-level drill-down: **Requests** → **Messages** → **Message detail** (full JSON with syntax highlighting).
 
-Sessions are automatically grouped by `session_id` from the request metadata. Each session shows the model, number of user messages, and timestamp.
+The request list shows model, status code, duration, and timestamp. Supports both OpenAI and Anthropic API formats transparently.
 
 | Key | Action |
 |---|---|
@@ -56,12 +56,12 @@ Sessions are automatically grouped by `session_id` from the request metadata. Ea
 | `↓` / `j` | Move down |
 | `→` / `l` / `Enter` | Open / select |
 | `←` / `h` / `Esc` | Go back |
-| `r` | Reload (returns to sessions and refreshes) |
+| `r` | Reload (returns to request list and refreshes) |
 | `w` | Toggle word wrap (detail view) |
 | `p` | Toggle dark/light theme |
 | `q` | Quit |
 
-The TUI reads directly from the SQLite database, so it works while the proxy is running. Press `r` to refresh and see new sessions.
+The TUI reads directly from the SQLite database, so it works while the proxy is running. Press `r` to refresh and see new requests.
 
 ## Configuration
 

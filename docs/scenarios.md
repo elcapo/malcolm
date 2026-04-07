@@ -164,7 +164,12 @@ Here OpenCode uses the `@ai-sdk/anthropic` provider instead of the generic OpenA
 
 ## Viewing logs
 
-Regardless of the scenario, browse logged requests at [http://127.0.0.1:8900/logs](http://127.0.0.1:8900/logs) or query the JSON API at `/api/logs`.
+Regardless of the scenario, use the terminal UI to browse logged requests:
+
+```bash
+malcolm tui                          # uses default malcolm.db
+malcolm tui --db-path ./other.db     # use a specific database
+```
 
 ## Tips
 

@@ -11,44 +11,13 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import DataTable, Header, RichLog, Static
 
+from malcolm.formats import group_records, parse_record
+from malcolm.models import Conversation, Message, SessionGroup
 from malcolm.storage import Storage
 
+_PAGE_SIZE = 50
 
-def _extract_assistant_message(resp_body: dict) -> dict | None:
-    """Extract the assistant message from a response body (OpenAI or Anthropic format)."""
-    if not isinstance(resp_body, dict):
-        return None
-    # OpenAI format: choices[].message
-    if "choices" in resp_body:
-        for choice in resp_body["choices"]:
-            msg = choice.get("message") or choice.get("delta")
-            if msg and (msg.get("content") is not None or msg.get("tool_calls")):
-                return msg
-    # Anthropic format: role + content[]
-    if resp_body.get("role") == "assistant" and "content" in resp_body:
-        return {"role": "assistant", "content": resp_body["content"]}
-    return None
-
-
-def _assemble_anthropic_chunks(chunks: list[dict]) -> dict | None:
-    """Assemble Anthropic SSE chunks into a single assistant message."""
-    text_parts: list[str] = []
-    for chunk in chunks:
-        # Anthropic content_block_delta with text_delta
-        delta = chunk.get("delta", {})
-        if delta.get("type") == "text_delta" and delta.get("text"):
-            text_parts.append(delta["text"])
-        # OpenAI format fallback
-        for choice in chunk.get("choices", []):
-            d = choice.get("delta", {})
-            if d.get("content"):
-                text_parts.append(d["content"])
-    if text_parts:
-        return {"role": "assistant", "content": "".join(text_parts)}
-    return None
-
-
-_HINT_NAV = "↑/k ↓/j navigate · →/l open · r reload · p theme · q quit"
+_HINT_GROUPS = "↑/k ↓/j navigate · →/l open · n next page · N prev page · r reload · p theme · q quit"
 _HINT_NAV_BACK = "↑/k ↓/j navigate · →/l open · ←/h back · r reload · p theme · q quit"
 _HINT_DETAIL = "↑/k ↓/j scroll · ←/h back · w wrap · r reload · p theme · q quit"
 
@@ -74,7 +43,6 @@ class VimDataTable(DataTable):
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("l", "select_cursor", "Select", show=False),
-        Binding("r", "reload_screen", "Reload", show=False),
     ]
 
     def action_cursor_left(self) -> None:
@@ -87,46 +55,177 @@ class VimDataTable(DataTable):
         self.action_select_cursor()
 
 
-class SessionsScreen(Screen):
-    """List of sessions."""
+class GroupsScreen(Screen):
+    """List of session groups (first screen)."""
+
+    BINDINGS = [
+        Binding("n", "next_page", "Next page", show=False),
+        Binding("N", "prev_page", "Prev page", show=False),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._groups: list[SessionGroup] = []
+        self._page = 0
+        self._pages: list[list[SessionGroup]] = []
+        self._cursor: str | None = None  # timestamp cursor for pagination
+        self._has_more = True
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield VimDataTable(cursor_type="row")
-        yield HintBar(_HINT_NAV)
+        yield HintBar(_HINT_GROUPS)
 
     async def on_mount(self) -> None:
         self.app.sub_title = "Sessions"
-        await self._load_sessions()
+        await self._load_page(reset=True)
 
-    async def _load_sessions(self) -> None:
+    async def _load_page(self, reset: bool = False) -> None:
         await self.app.storage.refresh()
+        if reset:
+            self._pages = []
+            self._page = 0
+            self._cursor = None
+            self._has_more = True
+
+        # Only fetch if we need a new page
+        if self._page >= len(self._pages) and self._has_more:
+            records = await self.app.storage.list_page_full(
+                page_size=_PAGE_SIZE, before=self._cursor,
+            )
+            if records:
+                groups = group_records(records)
+                self._pages.append(groups)
+                self._cursor = records[-1].get("timestamp")
+                self._has_more = len(records) == _PAGE_SIZE
+            else:
+                self._has_more = False
+                if not self._pages:
+                    self._pages.append([])
+
+        self._groups = self._pages[self._page] if self._page < len(self._pages) else []
+        self._render_table()
+
+    def _render_table(self) -> None:
         table = self.query_one(VimDataTable)
         table.clear(columns=True)
-        table.add_columns("Time", "Model", "Messages", "Session")
-        sessions = await self.app.storage.list_sessions(100)
-        self._sessions = sessions
-        for s in sessions:
+        table.add_columns("Model", "First message", "Last message", "Requests")
+
+        for g in self._groups:
             table.add_row(
-                s["timestamp"][:19],
-                s.get("model") or "-",
-                str(s["user_messages"]),
-                s["session_id"][:12] + "…",
-                key=s["last_request_id"],
+                Text(g.model or "-", style="bold cyan"),
+                g.earliest_timestamp[:19],
+                g.latest_timestamp[:19],
+                Text(str(g.request_count), style="", justify="right"),
+                key=g.session_id,
             )
-        if not sessions:
-            table.add_row("-", "No sessions", "-", "-")
+
+        if not self._groups:
+            table.add_row("-", "-", "No sessions", "-")
+
+        page_info = f"page {self._page + 1}"
+        if not self._has_more and self._page >= len(self._pages) - 1:
+            page_info += " (last)"
+        self.app.sub_title = f"Sessions — {page_info}"
+
+    async def action_next_page(self) -> None:
+        if self._has_more or self._page < len(self._pages) - 1:
+            self._page += 1
+            await self._load_page()
+
+    async def action_prev_page(self) -> None:
+        if self._page > 0:
+            self._page -= 1
+            self._groups = self._pages[self._page]
+            self._render_table()
 
     async def action_reload(self) -> None:
-        await self._load_sessions()
+        await self._load_page(reset=True)
 
     def on_screen_resume(self) -> None:
-        self.app.sub_title = "Sessions"
+        page_info = f"page {self._page + 1}"
+        self.app.sub_title = f"Sessions — {page_info}"
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if not self._sessions:
+        if not self._groups:
+            return
+        sid = event.row_key.value
+        for g in self._groups:
+            if g.session_id == sid:
+                self.app.push_screen(RequestsScreen(g))
+                return
+
+
+class RequestsScreen(Screen):
+    """List of requests within a session group."""
+
+    BINDINGS = [
+        Binding("escape", "back", "Back"),
+        Binding("h", "back", "Back", show=False),
+    ]
+
+    def __init__(self, group: SessionGroup) -> None:
+        super().__init__()
+        self._group = group
+        self._records: list[dict] = []
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield VimDataTable(cursor_type="row")
+        yield HintBar(_HINT_NAV_BACK)
+
+    async def on_mount(self) -> None:
+        await self._load_requests()
+
+    async def _load_requests(self) -> None:
+        await self.app.storage.refresh()
+        records = []
+        for rid in self._group.record_ids:
+            record = await self.app.storage.get(rid)
+            if record:
+                records.append(record)
+        self._records = records
+
+        model = self._group.model or "?"
+        self._sub_title = f"{model} — {self._group.request_count} requests"
+        self.app.sub_title = self._sub_title
+
+        table = self.query_one(VimDataTable)
+        table.clear(columns=True)
+        table.add_columns("Model", "Time", "Status", "Duration", "Stream")
+
+        for r in records:
+            table.add_row(
+                Text(r.get("model") or "-", style="bold cyan"),
+                (r.get("timestamp") or "")[:19],
+                _format_status(r.get("status_code")),
+                _format_duration(r.get("duration_ms")),
+                "Yes" if r.get("stream") else "No",
+                key=r["id"],
+            )
+
+        if not records:
+            table.add_row("-", "-", "-", "-", "-")
+
+    async def on_key(self, event) -> None:
+        if event.key == "r":
+            event.prevent_default()
+            event.stop()
+            while not isinstance(self.app.screen, GroupsScreen):
+                self.app.pop_screen()
+            await self.app.screen.action_reload()
+
+    def on_screen_resume(self) -> None:
+        if hasattr(self, "_sub_title"):
+            self.app.sub_title = self._sub_title
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if not self._records:
             return
         self.app.push_screen(MessagesScreen(event.row_key.value))
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
 
 
 class MessagesScreen(Screen):
@@ -140,7 +239,7 @@ class MessagesScreen(Screen):
     def __init__(self, record_id: str) -> None:
         super().__init__()
         self.record_id = record_id
-        self._messages: list[dict] = []
+        self._conversation: Conversation | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -157,8 +256,11 @@ class MessagesScreen(Screen):
             self.app.pop_screen()
             return
 
-        model = record.get("model") or "?"
-        ts = (record.get("timestamp") or "")[:19]
+        conversation = parse_record(record)
+        self._conversation = conversation
+
+        model = conversation.model or "?"
+        ts = conversation.timestamp[:19]
         self._sub_title = f"{model} — {ts}"
         self.app.sub_title = self._sub_title
 
@@ -166,52 +268,9 @@ class MessagesScreen(Screen):
         table.clear(columns=True)
         table.add_columns("#", "Role", "Content")
 
-        # Collect request messages
-        req_body = record.get("request_body") or {}
-        messages = list(req_body.get("messages") or [])
-
-        # Add assistant response
-        resp_body = record.get("response_body") or {}
-        resp_msg = _extract_assistant_message(resp_body)
-        if resp_msg:
-            messages.append(resp_msg)
-        elif record.get("response_chunks"):
-            chunks = record["response_chunks"]
-            assembled = _assemble_anthropic_chunks(chunks)
-            if assembled:
-                messages.append(assembled)
-            else:
-                messages.append({
-                    "role": "assistant",
-                    "content": f"[streaming — {len(chunks)} chunks]",
-                    "_chunks": chunks,
-                })
-
-        self._messages = messages
-
-        for i, msg in enumerate(messages):
-            content = msg.get("content") or ""
-            if isinstance(content, list):
-                # Take the last non-system-reminder text block
-                last_text = ""
-                for item in reversed(content):
-                    if isinstance(item, dict):
-                        text = item.get("text", "")
-                        if text and not text.lstrip().startswith("<system-reminder>"):
-                            last_text = text
-                            break
-                        elif item.get("type") and item["type"] != "text":
-                            last_text = f"[{item['type']}]"
-                            break
-                    elif item:
-                        last_text = str(item)
-                        break
-                content = last_text
-            if not content and msg.get("tool_calls"):
-                names = [tc.get("function", {}).get("name", "?") for tc in msg["tool_calls"]]
-                content = f"[tool: {', '.join(names)}]"
-            preview = (content or "—")[:100].replace("\n", " ")
-            role = msg.get("role") or "?"
+        for i, msg in enumerate(conversation.messages):
+            preview = _message_preview(msg)
+            role = msg.role
             if role == "user":
                 style = "bold"
             elif role == "assistant":
@@ -231,7 +290,7 @@ class MessagesScreen(Screen):
         if event.key == "r":
             event.prevent_default()
             event.stop()
-            while not isinstance(self.app.screen, SessionsScreen):
+            while not isinstance(self.app.screen, GroupsScreen):
                 self.app.pop_screen()
             await self.app.screen.action_reload()
 
@@ -240,8 +299,10 @@ class MessagesScreen(Screen):
             self.app.sub_title = self._sub_title
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if not self._conversation:
+            return
         idx = int(event.row_key.value)
-        self.app.push_screen(DetailScreen(self._messages[idx]))
+        self.app.push_screen(DetailScreen(self._conversation.messages[idx]))
 
     def action_back(self) -> None:
         self.app.pop_screen()
@@ -259,25 +320,24 @@ class DetailScreen(Screen):
         Binding("w", "toggle_wrap", "Wrap", show=False),
     ]
 
-    def __init__(self, message: dict) -> None:
+    def __init__(self, message: Message) -> None:
         super().__init__()
         self._message = message
-        self._wrap = False
+        self._wrap = True
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield RichLog(highlight=True, wrap=False)
+        yield RichLog(highlight=True, wrap=True)
         yield HintBar(_HINT_DETAIL)
 
     def on_mount(self) -> None:
         self._render_message()
 
     def _render_message(self) -> None:
-        role = self._message.get("role", "message")
-        self.app.sub_title = f"Detail — {role}"
+        self.app.sub_title = f"Detail — {self._message.role}"
         log = self.query_one(RichLog)
         log.clear()
-        formatted = json.dumps(self._message, indent=2, ensure_ascii=False)
+        formatted = json.dumps(self._message.raw, indent=2, ensure_ascii=False)
         log.write(Syntax(formatted, "json", theme="monokai", word_wrap=self._wrap))
 
     def action_toggle_wrap(self) -> None:
@@ -293,8 +353,7 @@ class DetailScreen(Screen):
         if event.key == "r":
             event.prevent_default()
             event.stop()
-            # Pop back to sessions and reload
-            while not isinstance(self.app.screen, SessionsScreen):
+            while not isinstance(self.app.screen, GroupsScreen):
                 self.app.pop_screen()
             await self.app.screen.action_reload()
 
@@ -303,6 +362,42 @@ class DetailScreen(Screen):
 
     def action_scroll_up(self) -> None:
         self.query_one(RichLog).scroll_up()
+
+
+def _format_status(status: int | None) -> Text:
+    """Format an HTTP status code with a color based on its class."""
+    if status is None:
+        return Text("-")
+    if 200 <= status < 300:
+        style = "green"
+    elif 300 <= status < 400:
+        style = "cyan"
+    elif 400 <= status < 500:
+        style = "red"
+    elif 500 <= status < 600:
+        style = "bold red"
+    else:
+        style = ""
+    return Text(str(status), style=style)
+
+
+def _format_duration(duration_ms: float | None) -> Text:
+    """Format a duration in ms with thousands separator, right-aligned."""
+    if duration_ms is None:
+        return Text("-", justify="right")
+    return Text(f"{duration_ms:,.0f} ms", justify="right")
+
+
+def _message_preview(msg: Message) -> str:
+    """Build a short preview string for a message."""
+    if msg.text:
+        return msg.text[:100].replace("\n", " ")
+    if msg.tool_calls:
+        names = [tc.name for tc in msg.tool_calls]
+        return f"[tool: {', '.join(names)}]"
+    if msg.tool_result:
+        return msg.tool_result[:100].replace("\n", " ")
+    return "—"
 
 
 class MalcolmTUI(App):
@@ -332,7 +427,7 @@ class MalcolmTUI(App):
     async def on_mount(self) -> None:
         self.storage = Storage(self._db_path)
         await self.storage.init()
-        self.push_screen(SessionsScreen())
+        self.push_screen(GroupsScreen())
 
     async def on_unmount(self) -> None:
         if hasattr(self, "storage"):

@@ -134,3 +134,59 @@ async def test_null_storage_delete():
     ns = NullStorage()
     result = await ns.delete("any-id")
     assert result is False
+
+
+# list_page_full tests
+
+
+async def test_list_page_full_basic(storage):
+    for i in range(5):
+        await storage.save(_make_record(
+            timestamp=f"2026-01-01T00:{i:02d}:00",
+            model=f"model-{i}",
+        ))
+
+    results = await storage.list_page_full(page_size=3)
+    assert len(results) == 3
+    # Should be newest first
+    assert results[0]["model"] == "model-4"
+    assert results[1]["model"] == "model-3"
+    assert results[2]["model"] == "model-2"
+    # Should include request_body as dict
+    assert isinstance(results[0]["request_body"], dict)
+
+
+async def test_list_page_full_cursor(storage):
+    for i in range(5):
+        await storage.save(_make_record(
+            timestamp=f"2026-01-01T00:{i:02d}:00",
+            model=f"model-{i}",
+        ))
+
+    # First page
+    page1 = await storage.list_page_full(page_size=2)
+    assert len(page1) == 2
+    assert page1[0]["model"] == "model-4"
+
+    # Second page using cursor
+    cursor = page1[-1]["timestamp"]
+    page2 = await storage.list_page_full(page_size=2, before=cursor)
+    assert len(page2) == 2
+    assert page2[0]["model"] == "model-2"
+
+    # Third page
+    cursor2 = page2[-1]["timestamp"]
+    page3 = await storage.list_page_full(page_size=2, before=cursor2)
+    assert len(page3) == 1
+    assert page3[0]["model"] == "model-0"
+
+
+async def test_list_page_full_empty(storage):
+    results = await storage.list_page_full()
+    assert results == []
+
+
+async def test_null_storage_list_page_full():
+    ns = NullStorage()
+    result = await ns.list_page_full()
+    assert result == []
