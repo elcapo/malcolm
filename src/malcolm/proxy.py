@@ -30,6 +30,10 @@ _SKIP_HEADERS = {
     "accept-encoding",
 }
 
+# Headers captured from client requests for session detection and diagnostics.
+# Auth headers are intentionally excluded.
+_CAPTURE_HEADERS = {"user-agent", "x-session-affinity", "anthropic-beta", "x-app"}
+
 
 def _build_target_url(base_url: str, path: str) -> str:
     """Build the target URL by combining base_url and the request path.
@@ -87,11 +91,15 @@ async def forward_request(
     storage: Storage | NullStorage,
     transforms: list[Transform] | None = None,
 ) -> JSONResponse:
+    captured_headers = {
+        k: v for k, v in request.headers.items() if k.lower() in _CAPTURE_HEADERS
+    }
     record = RequestRecord(
         id=str(uuid.uuid4()),
         model=body.get("model", ""),
         stream=False,
         request_body=body,
+        request_headers=captured_headers,
     )
 
     if transforms is None:
@@ -174,11 +182,15 @@ async def forward_request_stream(
     storage: Storage | NullStorage,
     transforms: list[Transform] | None = None,
 ) -> StreamingResponse:
+    captured_headers = {
+        k: v for k, v in request.headers.items() if k.lower() in _CAPTURE_HEADERS
+    }
     record = RequestRecord(
         id=str(uuid.uuid4()),
         model=body.get("model", ""),
         stream=True,
         request_body=body,
+        request_headers=captured_headers,
     )
 
     if transforms is None:

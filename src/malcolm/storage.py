@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS requests (
     model TEXT,
     stream INTEGER NOT NULL DEFAULT 0,
     request_body TEXT NOT NULL,
+    request_headers TEXT,
     response_body TEXT,
     response_chunks TEXT,
     status_code INTEGER,
@@ -41,6 +42,7 @@ class RequestRecord:
     model: str = ""
     stream: bool = False
     request_body: dict = field(default_factory=dict)
+    request_headers: dict = field(default_factory=dict)
     response_body: dict | None = None
     response_chunks: list[dict] | None = None
     status_code: int | None = None
@@ -76,6 +78,13 @@ class Storage:
             "CREATE INDEX IF NOT EXISTS idx_transforms_request_id "
             "ON request_transforms (request_id)"
         )
+        # Migration: add request_headers column if it doesn't exist yet
+        try:
+            await self._db.execute(
+                "ALTER TABLE requests ADD COLUMN request_headers TEXT"
+            )
+        except Exception:
+            pass  # column already exists
         await self._db.commit()
 
     async def refresh(self) -> None:
@@ -92,9 +101,9 @@ class Storage:
         await self._db.execute(
             """
             INSERT OR REPLACE INTO requests
-                (id, timestamp, model, stream, request_body, response_body,
-                 response_chunks, status_code, duration_ms, error)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, timestamp, model, stream, request_body, request_headers,
+                 response_body, response_chunks, status_code, duration_ms, error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.id,
@@ -102,6 +111,7 @@ class Storage:
                 record.model,
                 int(record.stream),
                 json.dumps(record.request_body),
+                json.dumps(record.request_headers) if record.request_headers else None,
                 json.dumps(record.response_body) if record.response_body is not None else None,
                 json.dumps(record.response_chunks) if record.response_chunks is not None else None,
                 record.status_code,
@@ -135,7 +145,7 @@ class Storage:
         if before:
             cursor = await self._db.execute(
                 "SELECT id, timestamp, model, stream, status_code, duration_ms, "
-                "error, request_body "
+                "error, request_body, request_headers "
                 "FROM requests WHERE timestamp < ? "
                 "ORDER BY timestamp DESC LIMIT ?",
                 (before, page_size),
@@ -143,7 +153,7 @@ class Storage:
         else:
             cursor = await self._db.execute(
                 "SELECT id, timestamp, model, stream, status_code, duration_ms, "
-                "error, request_body "
+                "error, request_body, request_headers "
                 "FROM requests ORDER BY timestamp DESC LIMIT ?",
                 (page_size,),
             )
@@ -153,6 +163,8 @@ class Storage:
             d = dict(row)
             if d.get("request_body") is not None:
                 d["request_body"] = json.loads(d["request_body"])
+            if d.get("request_headers") is not None:
+                d["request_headers"] = json.loads(d["request_headers"])
             result.append(d)
         return result
 
@@ -202,7 +214,7 @@ class Storage:
         if row is None:
             return None
         result = dict(row)
-        for key in ("request_body", "response_body", "response_chunks"):
+        for key in ("request_body", "request_headers", "response_body", "response_chunks"):
             if result.get(key) is not None:
                 result[key] = json.loads(result[key])
         result["transforms"] = await self.get_transforms(record_id)

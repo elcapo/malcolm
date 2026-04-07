@@ -25,7 +25,7 @@ class FormatParser(Protocol):
     def can_parse_response(self, body: dict) -> bool: ...
     def parse_response(self, body: dict) -> Message | None: ...
     def assemble_chunks(self, chunks: list[dict]) -> Message | None: ...
-    def extract_session_hint(self, body: dict) -> str | None: ...
+    def extract_session_hint(self, body: dict, headers: dict | None = None) -> str | None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +141,7 @@ class OpenAIParser:
             raw=msg,
         )
 
-    def extract_session_hint(self, body: dict) -> str | None:
+    def extract_session_hint(self, body: dict, headers: dict | None = None) -> str | None:
         # OpenAI has no standard session field; check common conventions
         metadata = body.get("metadata")
         if isinstance(metadata, dict):
@@ -289,7 +289,12 @@ class AnthropicParser:
             raw=msg,
         )
 
-    def extract_session_hint(self, body: dict) -> str | None:
+    def extract_session_hint(self, body: dict, headers: dict | None = None) -> str | None:
+        # OpenCode sends session ID in x-session-affinity header
+        if headers:
+            sid = headers.get("x-session-affinity") or headers.get("X-Session-Affinity")
+            if isinstance(sid, str) and sid:
+                return sid
         # Anthropic clients (e.g. Claude Code) may put session info in metadata
         metadata = body.get("metadata")
         if isinstance(metadata, dict):
@@ -369,11 +374,11 @@ def parse_record(record: dict) -> Conversation:
     )
 
 
-def extract_session_hint(body: dict) -> str | None:
-    """Try each parser to extract a session hint from a request body."""
+def extract_session_hint(body: dict, headers: dict | None = None) -> str | None:
+    """Try each parser to extract a session hint from a request body (and headers)."""
     for parser in PARSERS:
         if parser.can_parse_request(body):
-            hint = parser.extract_session_hint(body)
+            hint = parser.extract_session_hint(body, headers)
             if hint:
                 return hint
     return None
@@ -394,7 +399,8 @@ def group_records(records: list[dict]) -> list[SessionGroup]:
 
     for record in records:
         body = record.get("request_body") or {}
-        hint = extract_session_hint(body)
+        headers = record.get("request_headers") or {}
+        hint = extract_session_hint(body, headers)
         if hint:
             hinted.setdefault(hint, []).append(record)
         else:
