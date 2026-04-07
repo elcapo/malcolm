@@ -56,6 +56,7 @@ The request list shows model, status code, duration, and timestamp. Supports bot
 | `↓` / `j` | Move down |
 | `→` / `l` / `Enter` | Open / select |
 | `←` / `h` / `Esc` | Go back |
+| `t` | Toggle view: raw → ghostkey → translation (messages/detail) |
 | `r` | Reload (returns to request list and refreshes) |
 | `w` | Toggle word wrap (detail view) |
 | `p` | Toggle dark/light theme |
@@ -77,6 +78,7 @@ All configuration is via environment variables:
 | `MALCOLM_DB_PATH` | `malcolm.db` | SQLite database file path |
 | `MALCOLM_LOG_LEVEL` | `info` | Log level |
 | `MALCOLM_TRANSLATE` | *(empty)* | Protocol translation: `anthropic_to_openai` or `openai_to_anthropic` |
+| `MALCOLM_GHOSTKEY_ENABLED` | `false` | Obfuscate secrets (API keys, tokens) before they reach the backend |
 
 See [docs/configuration.md](docs/configuration.md) for details and [docs/scenarios.md](docs/scenarios.md) for complete setup examples with Claude Code, OpenCode, and various backends (Anthropic, OpenAI, Ollama).
 

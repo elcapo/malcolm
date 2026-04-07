@@ -2,7 +2,7 @@ import uuid
 
 import pytest
 
-from malcolm.storage import NullStorage, RequestRecord, Storage
+from malcolm.storage import NullStorage, RequestRecord, Storage, TransformRecord
 
 
 @pytest.fixture
@@ -189,4 +189,132 @@ async def test_list_page_full_empty(storage):
 async def test_null_storage_list_page_full():
     ns = NullStorage()
     result = await ns.list_page_full()
+    assert result == []
+
+
+# TransformRecord tests
+
+
+async def test_save_and_get_transform(storage):
+    record = _make_record()
+    await storage.save(record)
+
+    transform = TransformRecord(
+        request_id=record.id,
+        transform_type="ghostkey",
+        request_body={"model": "gpt-4", "messages": [{"role": "user", "content": "obfuscated"}]},
+        response_body={"choices": [{"message": {"content": "restored"}}]},
+    )
+    await storage.save_transform(transform)
+
+    transforms = await storage.get_transforms(record.id)
+    assert len(transforms) == 1
+    assert transforms[0]["transform_type"] == "ghostkey"
+    assert transforms[0]["request_body"]["messages"][0]["content"] == "obfuscated"
+    assert transforms[0]["response_body"]["choices"][0]["message"]["content"] == "restored"
+
+
+async def test_save_multiple_transforms(storage):
+    record = _make_record()
+    await storage.save(record)
+
+    await storage.save_transform(TransformRecord(
+        request_id=record.id,
+        transform_type="ghostkey",
+        request_body={"obfuscated": True},
+    ))
+    await storage.save_transform(TransformRecord(
+        request_id=record.id,
+        transform_type="translation",
+        request_body={"translated": True},
+    ))
+
+    transforms = await storage.get_transforms(record.id)
+    assert len(transforms) == 2
+    types = {t["transform_type"] for t in transforms}
+    assert types == {"ghostkey", "translation"}
+
+
+async def test_get_includes_transforms(storage):
+    record = _make_record()
+    await storage.save(record)
+    await storage.save_transform(TransformRecord(
+        request_id=record.id,
+        transform_type="ghostkey",
+        request_body={"obfuscated": True},
+    ))
+
+    result = await storage.get(record.id)
+    assert "transforms" in result
+    assert len(result["transforms"]) == 1
+    assert result["transforms"][0]["transform_type"] == "ghostkey"
+
+
+async def test_get_no_transforms(storage):
+    record = _make_record()
+    await storage.save(record)
+
+    result = await storage.get(record.id)
+    assert result["transforms"] == []
+
+
+async def test_transform_cascade_delete(storage):
+    record = _make_record()
+    await storage.save(record)
+    await storage.save_transform(TransformRecord(
+        request_id=record.id,
+        transform_type="ghostkey",
+        request_body={"obfuscated": True},
+    ))
+
+    await storage.delete(record.id)
+    transforms = await storage.get_transforms(record.id)
+    assert transforms == []
+
+
+async def test_transform_upsert(storage):
+    record = _make_record()
+    await storage.save(record)
+
+    await storage.save_transform(TransformRecord(
+        request_id=record.id,
+        transform_type="ghostkey",
+        request_body={"version": 1},
+    ))
+    await storage.save_transform(TransformRecord(
+        request_id=record.id,
+        transform_type="ghostkey",
+        request_body={"version": 2},
+    ))
+
+    transforms = await storage.get_transforms(record.id)
+    assert len(transforms) == 1
+    assert transforms[0]["request_body"]["version"] == 2
+
+
+async def test_transform_with_chunks(storage):
+    record = _make_record(stream=True)
+    await storage.save(record)
+
+    chunks = [{"choices": [{"delta": {"content": "hi"}}]}]
+    await storage.save_transform(TransformRecord(
+        request_id=record.id,
+        transform_type="translation",
+        response_chunks=chunks,
+    ))
+
+    transforms = await storage.get_transforms(record.id)
+    assert len(transforms[0]["response_chunks"]) == 1
+
+
+async def test_null_storage_save_transform():
+    ns = NullStorage()
+    await ns.save_transform(TransformRecord(
+        request_id="any", transform_type="ghostkey",
+    ))
+
+
+async def test_null_storage_get_transforms():
+    ns = NullStorage()
+    result = await ns.get_transforms("any-id")
     assert result == []

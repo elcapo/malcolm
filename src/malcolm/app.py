@@ -8,9 +8,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
 from malcolm.config import Settings
-
 from malcolm.proxy import forward_request, forward_request_stream
 from malcolm.storage import NullStorage, Storage
+from malcolm.transforms import build_pipeline
 
 logger = logging.getLogger("malcolm")
 
@@ -51,6 +51,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="malcolm", lifespan=lifespan)
 
+    pipeline = build_pipeline(settings)
+
     @app.head("/")
     async def health_check():
         return Response(status_code=200)
@@ -66,17 +68,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return await forward_request_stream(
                     body, request, request.app.state.client,
                     request.app.state.settings, request.app.state.storage,
+                    transforms=pipeline,
                 )
             else:
                 return await forward_request(
                     body, request, request.app.state.client,
                     request.app.state.settings, request.app.state.storage,
+                    transforms=pipeline,
                 )
         else:
             # GET, DELETE, HEAD, OPTIONS — forward without body
             return await forward_request(
                 {}, request, request.app.state.client,
                 request.app.state.settings, request.app.state.storage,
+                transforms=pipeline,
             )
 
     return app

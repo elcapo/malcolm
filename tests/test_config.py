@@ -44,4 +44,4 @@ def test_settings_requires_target_url(monkeypatch):
     monkeypatch.delenv("MALCOLM_TARGET_URL", raising=False)
 
     with pytest.raises(Exception):
-        Settings()
+        Settings(_env_file=None)

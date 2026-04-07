@@ -16,10 +16,36 @@ from malcolm.models import Conversation, Message, SessionGroup
 from malcolm.storage import Storage
 
 _PAGE_SIZE = 50
+_VIEW_RAW = "raw"
+
+
+def _record_for_view(record: dict, view: str) -> dict:
+    """Return a virtual record using the given transform's bodies, or raw."""
+    if view == _VIEW_RAW:
+        return record
+    for t in record.get("transforms", []):
+        if t["transform_type"] == view:
+            virtual = dict(record)
+            if t.get("request_body") is not None:
+                virtual["request_body"] = t["request_body"]
+            if t.get("response_body") is not None:
+                virtual["response_body"] = t["response_body"]
+            if t.get("response_chunks") is not None:
+                virtual["response_chunks"] = t["response_chunks"]
+            return virtual
+    return record
+
+
+def _available_views(record: dict) -> list[str]:
+    """Return the list of available views for a record."""
+    views = [_VIEW_RAW]
+    for t in record.get("transforms", []):
+        views.append(t["transform_type"])
+    return views
 
 _HINT_GROUPS = "↑/k ↓/j navigate · →/l open · n next page · N prev page · r reload · p theme · q quit"
-_HINT_NAV_BACK = "↑/k ↓/j navigate · →/l open · ←/h back · r reload · p theme · q quit"
-_HINT_DETAIL = "↑/k ↓/j scroll · ←/h back · w wrap · r reload · p theme · q quit"
+_HINT_NAV_BACK = "↑/k ↓/j navigate · →/l open · ←/h back · t view · r reload · p theme · q quit"
+_HINT_DETAIL = "↑/k ↓/j scroll · ←/h back · t view · w wrap · r reload · p theme · q quit"
 
 
 class HintBar(Static):
@@ -207,13 +233,8 @@ class RequestsScreen(Screen):
         if not records:
             table.add_row("-", "-", "-", "-", "-")
 
-    async def on_key(self, event) -> None:
-        if event.key == "r":
-            event.prevent_default()
-            event.stop()
-            while not isinstance(self.app.screen, GroupsScreen):
-                self.app.pop_screen()
-            await self.app.screen.action_reload()
+    async def action_reload(self) -> None:
+        await self._load_requests()
 
     def on_screen_resume(self) -> None:
         if hasattr(self, "_sub_title"):
@@ -234,12 +255,16 @@ class MessagesScreen(Screen):
     BINDINGS = [
         Binding("escape", "back", "Back"),
         Binding("h", "back", "Back", show=False),
+        Binding("t", "toggle_view", "Toggle view", show=False),
     ]
 
     def __init__(self, record_id: str) -> None:
         super().__init__()
         self.record_id = record_id
         self._conversation: Conversation | None = None
+        self._record: dict | None = None
+        self._views: list[str] = [_VIEW_RAW]
+        self._view_idx: int = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -256,12 +281,28 @@ class MessagesScreen(Screen):
             self.app.pop_screen()
             return
 
-        conversation = parse_record(record)
+        self._record = record
+        self._views = _available_views(record)
+        self._view_idx = 0
+        self._render_for_view()
+
+    def _view_label(self) -> str:
+        if len(self._views) <= 1:
+            return ""
+        n = self._view_idx + 1
+        total = len(self._views)
+        name = self._views[self._view_idx]
+        return f" — view {n}/{total} ({name})"
+
+    def _render_for_view(self) -> None:
+        view = self._views[self._view_idx]
+        view_record = _record_for_view(self._record, view)
+        conversation = parse_record(view_record)
         self._conversation = conversation
 
         model = conversation.model or "?"
         ts = conversation.timestamp[:19]
-        self._sub_title = f"{model} — {ts}"
+        self._sub_title = f"{model} — {ts}{self._view_label()}"
         self.app.sub_title = self._sub_title
 
         table = self.query_one(VimDataTable)
@@ -286,13 +327,14 @@ class MessagesScreen(Screen):
                 key=str(i),
             )
 
-    async def on_key(self, event) -> None:
-        if event.key == "r":
-            event.prevent_default()
-            event.stop()
-            while not isinstance(self.app.screen, GroupsScreen):
-                self.app.pop_screen()
-            await self.app.screen.action_reload()
+    def action_toggle_view(self) -> None:
+        if self._record is None or len(self._views) <= 1:
+            return
+        self._view_idx = (self._view_idx + 1) % len(self._views)
+        self._render_for_view()
+
+    async def action_reload(self) -> None:
+        await self._load_messages()
 
     def on_screen_resume(self) -> None:
         if hasattr(self, "_sub_title"):
@@ -302,7 +344,12 @@ class MessagesScreen(Screen):
         if not self._conversation:
             return
         idx = int(event.row_key.value)
-        self.app.push_screen(DetailScreen(self._conversation.messages[idx]))
+        self.app.push_screen(DetailScreen(
+            self._conversation.messages[idx],
+            record=self._record,
+            views=self._views,
+            view_idx=self._view_idx,
+        ))
 
     def action_back(self) -> None:
         self.app.pop_screen()
@@ -318,11 +365,22 @@ class DetailScreen(Screen):
         Binding("j", "scroll_down", "Down", show=False),
         Binding("k", "scroll_up", "Up", show=False),
         Binding("w", "toggle_wrap", "Wrap", show=False),
+        Binding("t", "toggle_view", "Toggle view", show=False),
     ]
 
-    def __init__(self, message: Message) -> None:
+    def __init__(
+        self,
+        message: Message,
+        record: dict | None = None,
+        views: list[str] | None = None,
+        view_idx: int = 0,
+    ) -> None:
         super().__init__()
         self._message = message
+        self._msg_idx: int | None = None
+        self._record = record
+        self._views = views or [_VIEW_RAW]
+        self._view_idx = view_idx
         self._wrap = True
 
     def compose(self) -> ComposeResult:
@@ -331,14 +389,40 @@ class DetailScreen(Screen):
         yield HintBar(_HINT_DETAIL)
 
     def on_mount(self) -> None:
+        # Find the message index in the current conversation
+        if self._record is not None:
+            view = self._views[self._view_idx]
+            conv = parse_record(_record_for_view(self._record, view))
+            for i, m in enumerate(conv.messages):
+                if m.raw == self._message.raw:
+                    self._msg_idx = i
+                    break
         self._render_message()
 
+    def _view_label(self) -> str:
+        if len(self._views) <= 1:
+            return ""
+        n = self._view_idx + 1
+        total = len(self._views)
+        name = self._views[self._view_idx]
+        return f" — view {n}/{total} ({name})"
+
     def _render_message(self) -> None:
-        self.app.sub_title = f"Detail — {self._message.role}"
+        self.app.sub_title = f"Detail — {self._message.role}{self._view_label()}"
         log = self.query_one(RichLog)
         log.clear()
         formatted = json.dumps(self._message.raw, indent=2, ensure_ascii=False)
         log.write(Syntax(formatted, "json", theme="monokai", word_wrap=self._wrap))
+
+    def action_toggle_view(self) -> None:
+        if self._record is None or len(self._views) <= 1:
+            return
+        self._view_idx = (self._view_idx + 1) % len(self._views)
+        view = self._views[self._view_idx]
+        conv = parse_record(_record_for_view(self._record, view))
+        if self._msg_idx is not None and self._msg_idx < len(conv.messages):
+            self._message = conv.messages[self._msg_idx]
+        self._render_message()
 
     def action_toggle_wrap(self) -> None:
         self._wrap = not self._wrap
@@ -349,13 +433,8 @@ class DetailScreen(Screen):
     def action_back(self) -> None:
         self.app.pop_screen()
 
-    async def on_key(self, event) -> None:
-        if event.key == "r":
-            event.prevent_default()
-            event.stop()
-            while not isinstance(self.app.screen, GroupsScreen):
-                self.app.pop_screen()
-            await self.app.screen.action_reload()
+    async def action_reload(self) -> None:
+        self._render_message()
 
     def action_scroll_down(self) -> None:
         self.query_one(RichLog).scroll_down()
@@ -391,6 +470,15 @@ def _format_duration(duration_ms: float | None) -> Text:
 def _message_preview(msg: Message) -> str:
     """Build a short preview string for a message."""
     if msg.text:
+        content = msg.raw.get("content") if msg.raw else None
+        if isinstance(content, list):
+            text_blocks = [
+                b.get("text", "")
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            if text_blocks:
+                return text_blocks[-1][:100].replace("\n", " ")
         return msg.text[:100].replace("\n", " ")
     if msg.tool_calls:
         names = [tc.name for tc in msg.tool_calls]

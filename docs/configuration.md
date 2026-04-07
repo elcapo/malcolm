@@ -84,6 +84,22 @@ Valid values:
 
 When empty or unset, malcolm acts as a transparent proxy with no format conversion.
 
+### `MALCOLM_GHOSTKEY_ENABLED`
+
+**Default:** `false`
+
+Enables GhostKey secret obfuscation in the transform pipeline. When active, malcolm scans outgoing requests for known secret patterns (API keys, tokens, JWTs, etc.) and replaces them with format-preserving fakes before they reach the backend. Responses are transparently restored so the client always sees real values.
+
+This prevents secrets accidentally sent in LLM messages (e.g. `.env` file contents read by a coding agent) from reaching the upstream API.
+
+Both the original (with real secrets) and obfuscated versions are stored in the database — the original in the `requests` table and the obfuscated version in the `request_transforms` table. Use `t` in the TUI to toggle between views.
+
+The secret dictionary lives in memory only — it is not persisted to disk and resets when malcolm restarts.
+
+```bash
+MALCOLM_GHOSTKEY_ENABLED=true
+```
+
 ## Example `.env` file
 
 ```bash
@@ -94,4 +110,5 @@ MALCOLM_STORAGE_ENABLED=true
 MALCOLM_DB_PATH=malcolm.db
 MALCOLM_LOG_LEVEL=info
 MALCOLM_TRANSLATE=
+MALCOLM_GHOSTKEY_ENABLED=false
 ```

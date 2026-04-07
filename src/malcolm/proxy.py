@@ -10,22 +10,14 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from malcolm.formats import assemble_openai_chunks
-from malcolm.storage import RequestRecord
-from malcolm.translate import (
-    anthropic_request_to_openai,
-    anthropic_response_to_openai,
-    anthropic_stream_to_openai_lines,
-    openai_request_to_anthropic,
-    openai_response_to_anthropic,
-    openai_stream_to_anthropic_events,
-    rewrite_path,
-)
+from malcolm.storage import RequestRecord, TransformRecord
 
 if TYPE_CHECKING:
     import httpx
 
     from malcolm.config import Settings
     from malcolm.storage import NullStorage, Storage
+    from malcolm.transforms import Transform
 
 logger = logging.getLogger("malcolm.proxy")
 
@@ -93,6 +85,7 @@ async def forward_request(
     client: httpx.AsyncClient,
     settings: Settings,
     storage: Storage | NullStorage,
+    transforms: list[Transform] | None = None,
 ) -> JSONResponse:
     record = RequestRecord(
         id=str(uuid.uuid4()),
@@ -101,17 +94,20 @@ async def forward_request(
         request_body=body,
     )
 
-    translate = settings.translate
+    if transforms is None:
+        transforms = []
 
-    # Translate request if needed
-    if translate == "anthropic_to_openai":
-        forwarded_body = anthropic_request_to_openai(body)
-    elif translate == "openai_to_anthropic":
-        forwarded_body = openai_request_to_anthropic(body)
-    else:
-        forwarded_body = body
+    # ── Apply request transforms (forward order) ──────────────────
+    transform_snapshots: dict[str, dict] = {}
+    forwarded_body = body
+    for t in transforms:
+        forwarded_body = t.transform_request(forwarded_body)
+        transform_snapshots[t.name] = {"request_body": forwarded_body}
 
-    path = rewrite_path(request.url.path, translate)
+    # ── Resolve path & forward ────────────────────────────────────
+    path = request.url.path
+    for t in transforms:
+        path = t.rewrite_path(path)
     target_url = _build_target_url(settings.target_url, path)
     headers = _build_headers(request, settings)
     start = time.monotonic()
@@ -130,13 +126,16 @@ async def forward_request(
         except Exception:
             response_data = {"raw": response.text}
 
-        # Translate response if needed
-        if translate == "anthropic_to_openai" and record.status_code == 200:
-            record.response_body = openai_response_to_anthropic(response_data, body.get("model", ""))
-        elif translate == "openai_to_anthropic" and record.status_code == 200:
-            record.response_body = anthropic_response_to_openai(response_data)
-        else:
-            record.response_body = response_data
+        # Store raw backend response
+        record.response_body = response_data
+
+        # ── Apply response transforms (reverse order) ─────────────
+        client_response = response_data
+        if record.status_code == 200:
+            model = body.get("model", "")
+            for t in reversed(transforms):
+                client_response = t.transform_response(client_response, model=model)
+                transform_snapshots[t.name]["response_body"] = client_response
 
         logger.info(
             "request=%s model=%s status=%s duration=%.0fms",
@@ -150,13 +149,21 @@ async def forward_request(
         record.error = str(exc)
         logger.error("request=%s error=%s", record.id, exc)
         await storage.save(record)
+        for name, snapshot in transform_snapshots.items():
+            await storage.save_transform(TransformRecord(
+                request_id=record.id, transform_type=name, **snapshot,
+            ))
         return JSONResponse(
             status_code=502,
             content={"error": {"message": f"Backend error: {exc}", "type": "proxy_error"}},
         )
 
     await storage.save(record)
-    return JSONResponse(status_code=response.status_code, content=record.response_body)
+    for name, snapshot in transform_snapshots.items():
+        await storage.save_transform(TransformRecord(
+            request_id=record.id, transform_type=name, **snapshot,
+        ))
+    return JSONResponse(status_code=response.status_code, content=client_response)
 
 
 async def forward_request_stream(
@@ -165,6 +172,7 @@ async def forward_request_stream(
     client: httpx.AsyncClient,
     settings: Settings,
     storage: Storage | NullStorage,
+    transforms: list[Transform] | None = None,
 ) -> StreamingResponse:
     record = RequestRecord(
         id=str(uuid.uuid4()),
@@ -173,24 +181,27 @@ async def forward_request_stream(
         request_body=body,
     )
 
-    translate = settings.translate
+    if transforms is None:
+        transforms = []
 
-    # Translate request if needed
-    if translate == "anthropic_to_openai":
-        forwarded_body = anthropic_request_to_openai(body)
-    elif translate == "openai_to_anthropic":
-        forwarded_body = openai_request_to_anthropic(body)
-    else:
-        forwarded_body = body
+    # ── Apply request transforms (forward order) ──────────────────
+    transform_snapshots: dict[str, dict] = {}
+    forwarded_body = body
+    for t in transforms:
+        forwarded_body = t.transform_request(forwarded_body)
+        transform_snapshots[t.name] = {"request_body": forwarded_body}
 
-    path = rewrite_path(request.url.path, translate)
+    # ── Resolve path & forward ────────────────────────────────────
+    path = request.url.path
+    for t in transforms:
+        path = t.rewrite_path(path)
     target_url = _build_target_url(settings.target_url, path)
     headers = _build_headers(request, settings)
     start = time.monotonic()
 
     async def _stream_generator():
-        chunks: list[dict] = []
-        translate_state: dict = {}
+        raw_chunks: list[dict] = []
+        stream_states: dict[str, dict] = {t.name: {} for t in transforms}
         try:
             async with client.stream(
                 "POST", target_url, json=forwarded_body, headers=headers
@@ -198,26 +209,23 @@ async def forward_request_stream(
                 record.status_code = response.status_code
 
                 async for line in response.aiter_lines():
-                    if translate == "anthropic_to_openai":
-                        # Backend returns OpenAI SSE → translate to Anthropic SSE
-                        translated_events = openai_stream_to_anthropic_events(line, translate_state)
-                        for event_line in translated_events:
-                            yield event_line + "\n"
-                    elif translate == "openai_to_anthropic":
-                        # Backend returns Anthropic SSE → translate to OpenAI SSE
-                        translated_lines = anthropic_stream_to_openai_lines(line, translate_state)
-                        for tl in translated_lines:
-                            yield tl + "\n"
-                    else:
-                        yield line + "\n"
-
                     # Accumulate raw backend chunks for storage
                     if line.startswith("data: ") and line.strip() != "data: [DONE]":
                         try:
-                            chunk = json.loads(line[6:])
-                            chunks.append(chunk)
+                            raw_chunks.append(json.loads(line[6:]))
                         except json.JSONDecodeError:
                             pass
+
+                    # Apply stream transforms in reverse order
+                    output_lines = [line]
+                    for t in reversed(transforms):
+                        next_lines: list[str] = []
+                        for ol in output_lines:
+                            next_lines.extend(t.transform_stream_line(ol, stream_states[t.name]))
+                        output_lines = next_lines
+
+                    for ol in output_lines:
+                        yield ol + "\n"
 
                 yield "\n"
 
@@ -228,17 +236,21 @@ async def forward_request_stream(
             yield f"data: {json.dumps(error_data)}\n\n"
         finally:
             record.duration_ms = (time.monotonic() - start) * 1000
-            if chunks:
-                record.response_chunks = chunks
-                record.response_body = assemble_openai_chunks(chunks)
+            if raw_chunks:
+                record.response_chunks = raw_chunks
+                record.response_body = assemble_openai_chunks(raw_chunks)
             logger.info(
                 "request=%s model=%s stream=true chunks=%d duration=%.0fms",
                 record.id,
                 record.model,
-                len(chunks),
+                len(raw_chunks),
                 record.duration_ms,
             )
             await storage.save(record)
+            for name, snapshot in transform_snapshots.items():
+                await storage.save_transform(TransformRecord(
+                    request_id=record.id, transform_type=name, **snapshot,
+                ))
 
     return StreamingResponse(
         _stream_generator(),
