@@ -51,6 +51,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="malcolm", lifespan=lifespan)
 
+    if settings.ghostkey_enabled:
+        from malcolm.ghostkey import GhostKeyMiddleware
+
+        app.add_middleware(GhostKeyMiddleware)
+
     @app.head("/")
     async def health_check():
         return Response(status_code=200)

@@ -20,6 +20,7 @@ def _parse_args() -> dict:
     parser.add_argument("--malcolm-db-path", dest="db_path")
     parser.add_argument("--malcolm-log-level", dest="log_level")
     parser.add_argument("--malcolm-translate", dest="translate")
+    parser.add_argument("--malcolm-ghostkey-enabled", dest="ghostkey_enabled")
 
     args = parser.parse_args()
     # Return only the explicitly provided arguments

@@ -12,3 +12,4 @@ class Settings(BaseSettings):
     db_path: str = "malcolm.db"
     log_level: str = "info"
     translate: str = ""
+    ghostkey_enabled: bool = False
