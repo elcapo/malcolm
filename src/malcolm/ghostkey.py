@@ -1,18 +1,15 @@
 """
-ghostkey.py — secret obfuscation middleware for Malcolm.
+ghostkey.py — secret obfuscation engine for Malcolm.
 
-Intercepts requests before they reach the LLM backend and replaces
-secret values with format-preserving fakes. Restores them in responses
-so logs and tool calls always show real values locally, while the
-upstream API never sees them.
+Scans request bodies for secret values (API keys, tokens, credentials)
+and replaces them with format-preserving fakes.  Restores real values
+in responses so the client always sees originals while the upstream API
+never receives them.
+
+Used by the transform pipeline (``GhostKeyTransform`` in transforms.py).
 
 Enable via environment variable:
     MALCOLM_GHOSTKEY_ENABLED=true
-
-Wire into Malcolm's FastAPI app:
-    from malcolm.ghostkey import GhostKeyMiddleware
-    if settings.ghostkey_enabled:
-        app.add_middleware(GhostKeyMiddleware)
 """
 
 import json
@@ -21,8 +18,6 @@ import random
 import re
 import string
 import threading
-
-from starlette.types import ASGIApp, Message as ASGIMessage, Receive, Scope, Send
 
 from malcolm.formats import _find_request_parser
 
@@ -46,9 +41,7 @@ SENSITIVE_FILES = {
 }
 
 _RAW_PATTERNS = [
-    r"sk-ant-[a-zA-Z0-9\-_]{20,}",
-    r"sk-proj-[a-zA-Z0-9\-_]{40,}",
-    r"sk-[a-zA-Z0-9]{48}",
+    r"sk-[a-zA-Z0-9\-_]{20,}",
     r"github_pat_[a-zA-Z0-9_]{82}",
     r"gh[poas]_[a-zA-Z0-9]{36}",
     r"ghr_[a-zA-Z0-9]{36}",
@@ -222,66 +215,3 @@ def restore(text: str) -> str:
     return text
 
 
-# ── Middleware ────────────────────────────────────────────────────────────────
-
-class GhostKeyMiddleware:
-    """
-    Pure ASGI middleware — obfuscates secrets in LLM requests,
-    restores them in responses. Transparent to Malcolm's logging.
-
-    Handles both regular and streaming (SSE) responses: streaming
-    responses are processed chunk-by-chunk to preserve incremental
-    delivery.
-
-    Usage in Malcolm's app setup:
-        if settings.ghostkey_enabled:
-            app.add_middleware(GhostKeyMiddleware)
-    """
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        # ── Read and obfuscate request body ──────────────────────────
-        body_chunks: list[bytes] = []
-        while True:
-            msg = await receive()
-            body_chunks.append(msg.get("body", b""))
-            if not msg.get("more_body", False):
-                break
-
-        raw_body = b"".join(body_chunks)
-        body_text = raw_body.decode(errors="replace")
-
-        scan_request(body_text)
-        clean = obfuscate(body_text)
-
-        if clean != body_text:
-            log.info("ghostkey: obfuscated secrets in outgoing request")
-
-        clean_bytes = clean.encode()
-        body_sent = False
-
-        async def receive_with_clean_body() -> ASGIMessage:
-            nonlocal body_sent
-            if not body_sent:
-                body_sent = True
-                return {"type": "http.request", "body": clean_bytes}
-            # After body is sent, return disconnect on further reads
-            return {"type": "http.disconnect"}
-
-        # ── Intercept and restore response body ──────────────────────
-        async def send_with_restore(message: ASGIMessage) -> None:
-            if message["type"] == "http.response.body":
-                chunk = message.get("body", b"")
-                if chunk:
-                    text = chunk.decode(errors="replace")
-                    restored = restore(text)
-                    message = {**message, "body": restored.encode()}
-            await send(message)
-
-        await self.app(scope, receive_with_clean_body, send_with_restore)

@@ -56,6 +56,7 @@ The request list shows model, status code, duration, and timestamp. Supports bot
 | `↓` / `j` | Move down |
 | `→` / `l` / `Enter` | Open / select |
 | `←` / `h` / `Esc` | Go back |
+| `t` | Toggle view: raw → ghostkey → translation (messages/detail) |
 | `r` | Reload (returns to request list and refreshes) |
 | `w` | Toggle word wrap (detail view) |
 | `p` | Toggle dark/light theme |

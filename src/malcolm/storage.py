@@ -22,6 +22,17 @@ CREATE TABLE IF NOT EXISTS requests (
 )
 """
 
+_CREATE_TRANSFORMS_TABLE = """
+CREATE TABLE IF NOT EXISTS request_transforms (
+    request_id TEXT NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+    transform_type TEXT NOT NULL,
+    request_body TEXT,
+    response_body TEXT,
+    response_chunks TEXT,
+    PRIMARY KEY (request_id, transform_type)
+)
+"""
+
 
 @dataclass
 class RequestRecord:
@@ -37,6 +48,15 @@ class RequestRecord:
     error: str | None = None
 
 
+@dataclass
+class TransformRecord:
+    request_id: str
+    transform_type: str
+    request_body: dict | None = None
+    response_body: dict | None = None
+    response_chunks: list[dict] | None = None
+
+
 class Storage:
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
@@ -45,10 +65,16 @@ class Storage:
     async def init(self) -> None:
         self._db = await aiosqlite.connect(self._db_path)
         await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA foreign_keys = ON")
         await self._db.execute(_CREATE_TABLE)
+        await self._db.execute(_CREATE_TRANSFORMS_TABLE)
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_requests_timestamp "
             "ON requests (timestamp DESC)"
+        )
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_transforms_request_id "
+            "ON request_transforms (request_id)"
         )
         await self._db.commit()
 
@@ -130,6 +156,42 @@ class Storage:
             result.append(d)
         return result
 
+    async def save_transform(self, transform: TransformRecord) -> None:
+        assert self._db is not None
+        await self._db.execute(
+            """
+            INSERT OR REPLACE INTO request_transforms
+                (request_id, transform_type, request_body, response_body, response_chunks)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                transform.request_id,
+                transform.transform_type,
+                json.dumps(transform.request_body) if transform.request_body is not None else None,
+                json.dumps(transform.response_body) if transform.response_body is not None else None,
+                json.dumps(transform.response_chunks) if transform.response_chunks is not None else None,
+            ),
+        )
+        await self._db.commit()
+
+    async def get_transforms(self, request_id: str) -> list[dict]:
+        assert self._db is not None
+        self._db.row_factory = aiosqlite.Row
+        cursor = await self._db.execute(
+            "SELECT transform_type, request_body, response_body, response_chunks "
+            "FROM request_transforms WHERE request_id = ?",
+            (request_id,),
+        )
+        rows = await cursor.fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            for key in ("request_body", "response_body", "response_chunks"):
+                if d.get(key) is not None:
+                    d[key] = json.loads(d[key])
+            results.append(d)
+        return results
+
     async def get(self, record_id: str) -> dict | None:
         assert self._db is not None
         self._db.row_factory = aiosqlite.Row
@@ -143,6 +205,7 @@ class Storage:
         for key in ("request_body", "response_body", "response_chunks"):
             if result.get(key) is not None:
                 result[key] = json.loads(result[key])
+        result["transforms"] = await self.get_transforms(record_id)
         return result
 
     async def delete(self, record_id: str) -> bool:
@@ -165,6 +228,12 @@ class NullStorage:
 
     async def save(self, record: RequestRecord) -> None:
         pass
+
+    async def save_transform(self, transform: TransformRecord) -> None:
+        pass
+
+    async def get_transforms(self, request_id: str) -> list[dict]:
+        return []
 
     async def list_recent(self, limit: int = 50) -> list[dict]:
         return []

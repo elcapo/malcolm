@@ -38,6 +38,19 @@ Two implementations:
 - **`Storage`**: Real SQLite persistence using `aiosqlite` with WAL mode for concurrent access. Stores full request/response JSON, streaming chunks, timing, and errors.
 - **`NullStorage`**: No-op implementation used when `MALCOLM_STORAGE_ENABLED=false`. Same interface, does nothing.
 
+Two tables:
+- **`requests`**: Original unmodified data — what the client sent and what the backend returned.
+- **`request_transforms`**: Transform outputs keyed by `(request_id, transform_type)`. Each row stores how the request/response looked after a specific transform (e.g. `"ghostkey"`, `"translation"`). Cascade-deletes with the parent request.
+
+### `transforms.py` — Transform Pipeline
+
+Pluggable pipeline that modifies requests before they reach the backend and responses before they reach the client. Each transform implements the `Transform` protocol:
+
+- **`GhostKeyTransform`**: Scans for secrets and replaces them with format-preserving fakes. Restores originals in responses. Delegates to core functions in `ghostkey.py`.
+- **`TranslationTransform`**: Converts between Anthropic and OpenAI API formats. Delegates to pure functions in `translate.py`.
+
+The pipeline is assembled at startup via `build_pipeline(settings)`. Transforms are applied in order on requests and in reverse order on responses. Each transform's output is persisted to the `request_transforms` table so the TUI can show both raw and transformed data.
+
 ### `proxy.py` — Core Proxy Logic
 
 Handles two code paths:
@@ -50,6 +63,7 @@ Key behaviors:
 - Uses a long-lived `httpx.AsyncClient` for connection pooling (300s timeout)
 - Forwards auth headers: uses `MALCOLM_TARGET_API_KEY` if set, otherwise passes through the client's `Authorization` header
 - Assembles streaming chunks into a complete response for easier inspection
+- Applies the transform pipeline and persists both original and transformed data
 
 ### `app.py` — FastAPI Application
 
@@ -59,7 +73,7 @@ Wires everything together:
 
 ### `tui.py` — Terminal Log Viewer
 
-A Textual-based TUI for browsing logged requests from the terminal. Three-level drill-down: **Requests** → **Messages** → **Message detail** (full JSON with syntax highlighting). Vim-style keybindings. Consumes canonical `Conversation`/`Message` objects from `formats.py`, with no format-specific logic.
+A Textual-based TUI for browsing logged requests from the terminal. Three-level drill-down: **Sessions** → **Requests** → **Messages** → **Message detail** (full JSON with syntax highlighting). Vim-style keybindings. Consumes canonical `Conversation`/`Message` objects from `formats.py`, with no format-specific logic. Press `t` in Messages or Detail screens to toggle between raw and transformed views.
 
 ### `translate.py` — Protocol Translation
 
@@ -76,13 +90,15 @@ Loads settings and starts uvicorn. Registered as the `malcolm` console script.
 
 ## Request Flow
 
-1. Client sends `POST /v1/chat/completions` to malcolm
-2. malcolm parses the request body (minimal validation, preserves all fields)
-3. malcolm creates a `RequestRecord` with a UUID and timestamp
-4. malcolm forwards the request to `MALCOLM_TARGET_URL/chat/completions`
-5. For non-streaming: waits for response, saves record, returns response
-6. For streaming: yields SSE lines to client while accumulating, saves assembled response after stream ends
-7. Record is persisted to SQLite (if storage is enabled)
+1. Client sends a request to malcolm
+2. malcolm parses the request body and creates a `RequestRecord` with a UUID and timestamp
+3. The raw request body is saved to the `requests` table
+4. The transform pipeline runs on the request (ghostkey → translation), each step saved to `request_transforms`
+5. The transformed request is forwarded to the backend
+6. The raw backend response is saved to the `requests` table
+7. The transform pipeline runs in reverse on the response (translation → ghostkey), each step saved to `request_transforms`
+8. The transformed response is returned to the client
+9. For streaming: SSE lines are transformed on the fly and raw backend chunks are accumulated for storage
 
 ## Design Principles
 

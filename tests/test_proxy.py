@@ -9,6 +9,7 @@ from malcolm.config import Settings
 from malcolm.formats import assemble_openai_chunks
 from malcolm.proxy import _build_target_url, forward_request, forward_request_stream
 from malcolm.storage import NullStorage, RequestRecord
+from malcolm.transforms import TranslationTransform, build_pipeline
 
 
 # --- Unit tests for helpers ---
@@ -173,11 +174,9 @@ def test_forward_streaming(settings, null_storage):
     assert len(lines) >= 3  # 3 chunks + [DONE]
 
 
-def test_forward_with_anthropic_to_openai_translation(null_storage, monkeypatch):
+def test_forward_with_anthropic_to_openai_translation(null_storage, settings):
     """Send Anthropic-format request, verify OpenAI response translated back."""
-    monkeypatch.setenv("MALCOLM_TARGET_URL", "http://testserver")
-    monkeypatch.setenv("MALCOLM_TRANSLATE", "anthropic_to_openai")
-    translate_settings = Settings()
+    pipeline = [TranslationTransform("anthropic_to_openai")]
 
     openai_response = {
         "id": "chatcmpl-test",
@@ -196,7 +195,7 @@ def test_forward_with_anthropic_to_openai_translation(null_storage, monkeypatch)
         body = await request.json()
         transport = httpx.ASGITransport(app=backend)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            return await forward_request(body, request, client, translate_settings, null_storage)
+            return await forward_request(body, request, client, settings, null_storage, transforms=pipeline)
 
     test_client = TestClient(app)
     # Send Anthropic-format request
@@ -219,11 +218,9 @@ def test_forward_with_anthropic_to_openai_translation(null_storage, monkeypatch)
     assert data["stop_reason"] == "end_turn"
 
 
-def test_forward_with_openai_to_anthropic_translation(null_storage, monkeypatch):
+def test_forward_with_openai_to_anthropic_translation(null_storage, settings):
     """Send OpenAI-format request, verify Anthropic response translated back."""
-    monkeypatch.setenv("MALCOLM_TARGET_URL", "http://testserver")
-    monkeypatch.setenv("MALCOLM_TRANSLATE", "openai_to_anthropic")
-    translate_settings = Settings()
+    pipeline = [TranslationTransform("openai_to_anthropic")]
 
     # Fake Anthropic backend
     anthropic_backend = FastAPI()
@@ -247,7 +244,7 @@ def test_forward_with_openai_to_anthropic_translation(null_storage, monkeypatch)
         body = await request.json()
         transport = httpx.ASGITransport(app=anthropic_backend)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            return await forward_request(body, request, client, translate_settings, null_storage)
+            return await forward_request(body, request, client, settings, null_storage, transforms=pipeline)
 
     test_client = TestClient(app)
     resp = test_client.post(

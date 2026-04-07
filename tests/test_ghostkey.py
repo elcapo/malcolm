@@ -5,10 +5,8 @@ import json
 import pytest
 
 from malcolm import ghostkey
-from starlette.requests import Request
 
 from malcolm.ghostkey import (
-    GhostKeyMiddleware,
     is_sensitive_file,
     obfuscate,
     reset_session,
@@ -296,85 +294,3 @@ class TestSessionStats:
         assert session_stats()["secrets_protected"] == 0
 
 
-# ── Middleware ────────────────────────────────────────────────────────────────
-
-@pytest.fixture
-def ghostkey_app():
-    """Minimal FastAPI app with GhostKeyMiddleware for testing."""
-    from fastapi import FastAPI
-    from fastapi.responses import StreamingResponse as FastAPIStreamingResponse
-
-    app = FastAPI()
-    app.add_middleware(GhostKeyMiddleware)
-
-    # Capture what the handler actually receives (post-obfuscation)
-    app.state.captured_body = None
-
-    @app.post("/echo")
-    async def echo(request: Request):
-        body = await request.json()
-        request.app.state.captured_body = body
-        return body
-
-    @app.post("/stream")
-    async def stream(request: Request):
-        body = await request.json()
-        request.app.state.captured_body = body
-        text = json.dumps(body)
-
-        async def generate():
-            # Simulate SSE chunks
-            yield f"data: {text}\n\n"
-            yield "data: [DONE]\n\n"
-
-        return FastAPIStreamingResponse(
-            generate(),
-            media_type="text/event-stream",
-        )
-
-    return app
-
-
-@pytest.fixture
-def client(ghostkey_app):
-    from starlette.testclient import TestClient
-    return TestClient(ghostkey_app)
-
-
-class TestMiddleware:
-    def test_request_obfuscated(self, client, ghostkey_app):
-        token = "sk-ant-" + "r" * 20
-        resp = client.post("/echo", json={"key": token})
-        # The handler should have received an obfuscated version
-        captured = ghostkey_app.state.captured_body
-        assert captured["key"] != token
-        assert captured["key"].startswith("sk-")
-        assert len(captured["key"]) == len(token)
-        # But the client response is restored back to original
-        assert resp.json()["key"] == token
-
-    def test_response_restored_round_trip(self, client, ghostkey_app):
-        # Full round-trip: real token goes in, gets obfuscated to handler,
-        # handler echoes it, middleware restores it for the client
-        token = "AKIA" + "W" * 16
-        resp = client.post("/echo", json={"value": token})
-        captured = ghostkey_app.state.captured_body
-        # Handler saw obfuscated
-        assert captured["value"] != token
-        # Client sees original restored
-        assert resp.json()["value"] == token
-
-    def test_streaming_response_restored(self, client, ghostkey_app):
-        token = "ghp_" + "s" * 36
-        resp = client.post("/stream", json={"secret": token})
-        assert resp.status_code == 200
-        # Handler received obfuscated value
-        captured = ghostkey_app.state.captured_body
-        assert captured["secret"] != token
-        # Streaming response should have real values restored
-        content = resp.text
-        assert token in content
-
-    def test_no_secrets_passthrough(self, client):
-        resp = client.post("/echo", json={"msg": "hello world"})
-        assert resp.json() == {"msg": "hello world"}
