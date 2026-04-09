@@ -51,7 +51,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="malcolm", lifespan=lifespan)
 
-    pipeline = build_pipeline(settings)
+    pipeline = build_pipeline(settings.config_file)
 
     @app.head("/")
     async def health_check():

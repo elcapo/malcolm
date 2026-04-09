@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from malcolm.translate import (
+from malcolm.transforms.translation.engine import (
     anthropic_request_to_openai,
     anthropic_response_to_openai,
     anthropic_stream_to_openai_lines,

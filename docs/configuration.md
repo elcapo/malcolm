@@ -1,6 +1,6 @@
 # Configuration
 
-malcolm is configured through environment variables (all prefixed with `MALCOLM_`) and CLI arguments (all prefixed with `--malcolm-`). CLI arguments take precedence over environment variables.
+malcolm is configured through environment variables (all prefixed with `MALCOLM_`), CLI arguments (all prefixed with `--malcolm-`), and a YAML config file for the transform pipeline. CLI arguments take precedence over environment variables.
 
 ```bash
 # These two are equivalent:
@@ -72,23 +72,30 @@ Path to the SQLite database file. Can be absolute or relative to the working dir
 
 Log level for console output. Valid values: `debug`, `info`, `warning`, `error`, `critical`.
 
-### `MALCOLM_TRANSLATE`
+### `MALCOLM_CONFIG_FILE`
 
-**Default:** *(empty)*
+**Default:** `malcolm.yaml`
 
-Enables protocol translation between Anthropic and OpenAI API formats. When set, malcolm translates requests and responses on the fly, allowing clients that speak one protocol to use backends that speak the other.
+Path to the YAML config file that defines the transform pipeline.
 
-Valid values:
-- `anthropic_to_openai` — Client sends Anthropic format (`/v1/messages`), backend expects OpenAI format (`/v1/chat/completions`). Useful for running Claude Code against OpenAI or Ollama backends.
-- `openai_to_anthropic` — Client sends OpenAI format (`/v1/chat/completions`), backend expects Anthropic format (`/v1/messages`). Useful for running OpenAI-compatible tools against Anthropic's API.
+## Transform pipeline
 
-When empty or unset, malcolm acts as a transparent proxy with no format conversion.
+Transforms are configured in `malcolm.yaml` (or whatever path `MALCOLM_CONFIG_FILE` points to). Each transform is a pluggable module that can modify requests and responses as they pass through the proxy.
 
-### `MALCOLM_GHOSTKEY_ENABLED`
+The list order defines the pipeline order: transforms are applied in order on the request side and in reverse order on the response side.
 
-**Default:** `false`
+```yaml
+transforms:
+  - ghostkey
+  - translation:
+      direction: anthropic_to_openai
+```
 
-Enables GhostKey secret obfuscation in the transform pipeline. When active, malcolm scans outgoing requests for known secret patterns (API keys, tokens, JWTs, etc.) and replaces them with format-preserving fakes before they reach the backend. Responses are transparently restored so the client always sees real values.
+Transforms without configuration are listed as plain strings. Transforms with configuration are listed as single-key dicts mapping the transform name to its config.
+
+### `ghostkey`
+
+Scans outgoing requests for known secret patterns (API keys, tokens, JWTs, etc.) and replaces them with format-preserving fakes before they reach the backend. Responses are transparently restored so the client always sees real values.
 
 This prevents secrets accidentally sent in LLM messages (e.g. `.env` file contents read by a coding agent) from reaching the upstream API.
 
@@ -96,9 +103,22 @@ Both the original (with real secrets) and obfuscated versions are stored in the 
 
 The secret dictionary lives in memory only — it is not persisted to disk and resets when malcolm restarts.
 
-```bash
-MALCOLM_GHOSTKEY_ENABLED=true
-```
+No configuration required.
+
+### `translation`
+
+Enables protocol translation between Anthropic and OpenAI API formats. Translates requests and responses on the fly, allowing clients that speak one protocol to use backends that speak the other.
+
+**Config:**
+
+| Key | Required | Description |
+|---|---|---|
+| `direction` | yes | `anthropic_to_openai` or `openai_to_anthropic` |
+
+- `anthropic_to_openai` — Client sends Anthropic format (`/v1/messages`), backend expects OpenAI format (`/v1/chat/completions`). Useful for running Claude Code against OpenAI or Ollama backends.
+- `openai_to_anthropic` — Client sends OpenAI format (`/v1/chat/completions`), backend expects Anthropic format (`/v1/messages`). Useful for running OpenAI-compatible tools against Anthropic's API.
+
+See [src/malcolm/transforms/README.md](../src/malcolm/transforms/README.md) for how to create custom transforms.
 
 ## Example `.env` file
 
@@ -109,6 +129,13 @@ MALCOLM_PORT=8900
 MALCOLM_STORAGE_ENABLED=true
 MALCOLM_DB_PATH=malcolm.db
 MALCOLM_LOG_LEVEL=info
-MALCOLM_TRANSLATE=
-MALCOLM_GHOSTKEY_ENABLED=false
+```
+
+## Example `malcolm.yaml`
+
+```yaml
+transforms:
+  - ghostkey
+  - translation:
+      direction: anthropic_to_openai
 ```

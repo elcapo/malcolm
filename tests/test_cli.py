@@ -19,13 +19,13 @@ def test_parse_multiple_args(monkeypatch):
         "malcolm",
         "--malcolm-target-url=http://localhost:11434/v1",
         "--malcolm-port=9000",
-        "--malcolm-translate=anthropic_to_openai",
+        "--malcolm-config-file=custom.yaml",
     ])
     result = _parse_args()
     assert result == {
         "target_url": "http://localhost:11434/v1",
         "port": 9000,
-        "translate": "anthropic_to_openai",
+        "config_file": "custom.yaml",
     }
 
 

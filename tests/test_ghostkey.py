@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from malcolm import ghostkey
+from malcolm.transforms.ghostkey import engine as ghostkey
 
-from malcolm.ghostkey import (
+from malcolm.transforms.ghostkey.engine import (
     is_sensitive_file,
     obfuscate,
     reset_session,

@@ -77,7 +77,7 @@ A Textual-based TUI for browsing logged requests from the terminal. Three-level 
 
 ### `translate.py` — Protocol Translation
 
-Optional bidirectional translation between Anthropic and OpenAI API formats. Activated via `MALCOLM_TRANSLATE`. Contains pure functions for:
+Optional bidirectional translation between Anthropic and OpenAI API formats. Activated by adding `translation` to the transform pipeline in `malcolm.yaml`. Contains pure functions for:
 
 - **Request translation**: Converts message formats, system prompts, tool definitions, and images between protocols.
 - **Response translation**: Converts response envelopes, stop reasons, and usage stats.
