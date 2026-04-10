@@ -309,18 +309,22 @@ class Storage:
                 (page_size,),
             )
         rows = await cursor.fetchall()
-        results = []
-        for row in rows:
-            d = dict(row)
-            badge_cursor = await self._db.execute(
-                "SELECT key, value FROM request_annotations "
-                "WHERE request_id = ? AND display = 'badge'",
-                (d["id"],),
-            )
-            badge_rows = await badge_cursor.fetchall()
-            d["badges"] = {r["key"]: r["value"] for r in badge_rows}
-            results.append(d)
-        return results
+        if not rows:
+            return []
+
+        ids = [r["id"] for r in rows]
+        placeholders = ",".join("?" * len(ids))
+        badge_cursor = await self._db.execute(
+            f"SELECT request_id, key, value FROM request_annotations "
+            f"WHERE display = 'badge' AND request_id IN ({placeholders})",
+            ids,
+        )
+        badge_rows = await badge_cursor.fetchall()
+        badges_by_id: dict[str, dict[str, str]] = {}
+        for br in badge_rows:
+            badges_by_id.setdefault(br["request_id"], {})[br["key"]] = br["value"]
+
+        return [dict(row, badges=badges_by_id.get(row["id"], {})) for row in rows]
 
     async def delete(self, record_id: str) -> bool:
         assert self._db is not None
