@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from malcolm.config import Settings
-from malcolm.formats import assemble_openai_chunks
+from malcolm.formats import assemble_anthropic_chunks, assemble_chunks, assemble_openai_chunks
 from malcolm.proxy import _build_target_url, forward_request, forward_request_stream
 from malcolm.storage import NullStorage, RequestRecord
 from malcolm.transforms import TranslationTransform, build_pipeline
@@ -37,6 +37,69 @@ from malcolm.transforms import TranslationTransform, build_pipeline
 )
 def test_build_target_url(base_url, path, expected):
     assert _build_target_url(base_url, path) == expected
+
+
+def test_build_target_url_preserves_query_string():
+    assert (
+        _build_target_url("https://api.example.com", "/v1/messages", "beta=1&foo=bar")
+        == "https://api.example.com/v1/messages?beta=1&foo=bar"
+    )
+
+
+def test_build_target_url_empty_query_omits_question_mark():
+    assert (
+        _build_target_url("https://api.example.com", "/v1/messages", "")
+        == "https://api.example.com/v1/messages"
+    )
+
+
+# --- Stream assembly dispatch ---
+
+
+def test_assemble_chunks_dispatches_to_openai():
+    chunks = [{"id": "c1", "choices": [{"delta": {"content": "hi"}, "index": 0}]}]
+    result = assemble_chunks(chunks)
+    assert result["object"] == "chat.completion"
+    assert result["choices"][0]["message"]["content"] == "hi"
+
+
+def test_assemble_chunks_dispatches_to_anthropic():
+    chunks = [
+        {"type": "message_start", "message": {
+            "id": "msg_1", "model": "claude-3", "usage": {"input_tokens": 5, "output_tokens": 0},
+        }},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " world"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 2}},
+        {"type": "message_stop"},
+    ]
+    result = assemble_chunks(chunks)
+    assert result["type"] == "message"
+    assert result["id"] == "msg_1"
+    assert result["model"] == "claude-3"
+    assert result["content"] == [{"type": "text", "text": "Hello world"}]
+    assert result["stop_reason"] == "end_turn"
+    assert result["usage"] == {"input_tokens": 5, "output_tokens": 2}
+
+
+def test_assemble_anthropic_chunks_tool_use():
+    chunks = [
+        {"type": "message_start", "message": {"id": "msg_2", "model": "claude-3", "usage": {"input_tokens": 0, "output_tokens": 0}}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "tu_1", "name": "get_weather"}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": '{"city":'}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": '"NYC"}'}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 4}},
+    ]
+    result = assemble_anthropic_chunks(chunks)
+    block = result["content"][0]
+    assert block["type"] == "tool_use"
+    assert block["id"] == "tu_1"
+    assert block["name"] == "get_weather"
+    assert block["input"] == {"city": "NYC"}
+    assert result["stop_reason"] == "tool_use"
 
 
 def testassemble_openai_chunks_empty():
@@ -283,3 +346,53 @@ def test_forward_backend_error(settings, null_storage):
 
     assert resp.status_code == 502
     assert "proxy_error" in resp.json()["error"]["type"]
+
+
+def test_ghostkey_restores_on_error_response(settings, null_storage):
+    """On non-200 responses, ghostkey must still restore fake tokens to originals."""
+    from malcolm.transforms import GhostKeyTransform
+    from malcolm.transforms.ghostkey.engine import reset_session
+
+    reset_session()
+    gk = GhostKeyTransform()
+    secret = "sk-ant-" + "A" * 30
+    # Register the secret so ghostkey knows about it
+    gk.transform_request({"messages": [{"role": "user", "content": secret}]})
+    obfuscated_body = gk.transform_request({"messages": [{"role": "user", "content": secret}]})
+    fake_token = obfuscated_body["messages"][0]["content"]
+    assert fake_token != secret
+
+    # Backend returns 401 with the fake token echoed back
+    error_backend = FastAPI()
+
+    @error_backend.post("/v1/chat/completions")
+    async def fail(request: Request):
+        from fastapi.responses import JSONResponse as FJ
+        return FJ(
+            status_code=401,
+            content={"error": {"message": f"invalid api key: {fake_token}", "type": "auth_error"}},
+        )
+
+    app = FastAPI()
+
+    @app.post("/v1/chat/completions")
+    async def proxy(request: Request):
+        body = await request.json()
+        transport = httpx.ASGITransport(app=error_backend)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await forward_request(
+                body, request, client, settings, null_storage, transforms=[gk],
+            )
+
+    test_client = TestClient(app)
+    resp = test_client.post(
+        "/v1/chat/completions",
+        json={"model": "gpt-4", "messages": [{"role": "user", "content": secret}]},
+    )
+
+    assert resp.status_code == 401
+    data = resp.json()
+    # The real secret must be restored in the error message
+    assert secret in data["error"]["message"]
+    assert fake_token not in data["error"]["message"]
+    reset_session()

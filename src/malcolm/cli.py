@@ -1,4 +1,5 @@
 import argparse
+import logging
 import sys
 
 import uvicorn
@@ -42,6 +43,12 @@ def main():
 
     overrides = _parse_args()
     settings = Settings(**overrides)
+
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+
     app = create_app(settings)
     uvicorn.run(
         app,

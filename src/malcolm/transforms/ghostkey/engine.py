@@ -1,12 +1,12 @@
 """
-ghostkey.py — secret obfuscation engine for Malcolm.
+Secret obfuscation engine for the ghostkey transform.
 
 Scans request bodies for secret values (API keys, tokens, credentials)
 and replaces them with format-preserving fakes.  Restores real values
 in responses so the client always sees originals while the upstream API
 never receives them.
 
-Used by the transform pipeline (``GhostKeyTransform`` in transforms/ghostkey.py).
+Wrapped by ``GhostKeyTransform`` in ``malcolm.transforms.ghostkey``.
 Enable by adding ``ghostkey`` to the transforms list in ``malcolm.yaml``.
 """
 
@@ -62,7 +62,6 @@ _RAW_PATTERNS = [
     r"railway_[a-zA-Z0-9]{32,}",
     r"eyJ[a-zA-Z0-9_\-]+\.eyJ[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+",
     r"(?<=Bearer )[a-zA-Z0-9\-_=+/]{20,}",
-    r"\b[0-9a-f]{32,64}\b",
 ]
 
 TOKEN_PATTERNS = [re.compile(p) for p in _RAW_PATTERNS]

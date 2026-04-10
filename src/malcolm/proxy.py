@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from malcolm.formats import assemble_openai_chunks
+from malcolm.formats import assemble_chunks
 from malcolm.storage import RequestRecord, TransformRecord
 
 if TYPE_CHECKING:
@@ -35,8 +35,8 @@ _SKIP_HEADERS = {
 _CAPTURE_HEADERS = {"user-agent", "x-session-affinity", "anthropic-beta", "x-app"}
 
 
-def _build_target_url(base_url: str, path: str) -> str:
-    """Build the target URL by combining base_url and the request path.
+def _build_target_url(base_url: str, path: str, query: str = "") -> str:
+    """Build the target URL by combining base_url, the request path and query.
 
     If base_url contains a path prefix (e.g. /v1) and the request path
     already starts with that same prefix, it is not duplicated.
@@ -59,7 +59,10 @@ def _build_target_url(base_url: str, path: str) -> str:
         final_path = base_path + path
 
     origin = f"{parsed.scheme}://{parsed.netloc}"
-    return origin + final_path
+    url = origin + final_path
+    if query:
+        url = f"{url}?{query}"
+    return url
 
 
 def _build_headers(
@@ -116,7 +119,7 @@ async def forward_request(
     path = request.url.path
     for t in transforms:
         path = t.rewrite_path(path)
-    target_url = _build_target_url(settings.target_url, path)
+    target_url = _build_target_url(settings.target_url, path, request.url.query)
     headers = _build_headers(request, settings)
     start = time.monotonic()
 
@@ -138,12 +141,15 @@ async def forward_request(
         record.response_body = response_data
 
         # ── Apply response transforms (reverse order) ─────────────
+        # Transforms run on every status code so passes like ghostkey can
+        # restore originals inside error messages.  Transforms that only
+        # make sense on success bodies (e.g. translation) detect error
+        # shapes and pass through unchanged.
         client_response = response_data
-        if record.status_code == 200:
-            model = body.get("model", "")
-            for t in reversed(transforms):
-                client_response = t.transform_response(client_response, model=model)
-                transform_snapshots[t.name]["response_body"] = client_response
+        model = body.get("model", "")
+        for t in reversed(transforms):
+            client_response = t.transform_response(client_response, model=model)
+            transform_snapshots[t.name]["response_body"] = client_response
 
         logger.info(
             "request=%s model=%s status=%s duration=%.0fms",
@@ -207,7 +213,7 @@ async def forward_request_stream(
     path = request.url.path
     for t in transforms:
         path = t.rewrite_path(path)
-    target_url = _build_target_url(settings.target_url, path)
+    target_url = _build_target_url(settings.target_url, path, request.url.query)
     headers = _build_headers(request, settings)
     start = time.monotonic()
 
@@ -250,7 +256,7 @@ async def forward_request_stream(
             record.duration_ms = (time.monotonic() - start) * 1000
             if raw_chunks:
                 record.response_chunks = raw_chunks
-                record.response_body = assemble_openai_chunks(raw_chunks)
+                record.response_body = assemble_chunks(raw_chunks)
             logger.info(
                 "request=%s model=%s stream=true chunks=%d duration=%.0fms",
                 record.id,

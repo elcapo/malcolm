@@ -437,6 +437,103 @@ def group_records(records: list[dict]) -> list[SessionGroup]:
     return groups
 
 
+_ANTHROPIC_SSE_TYPES = {
+    "message_start",
+    "content_block_start",
+    "content_block_delta",
+    "content_block_stop",
+    "message_delta",
+    "message_stop",
+    "ping",
+}
+
+
+def assemble_chunks(chunks: list[dict]) -> dict:
+    """Dispatch to the right format-specific assembler based on chunk shape.
+
+    Used by the proxy to store an assembled ``response_body`` alongside the
+    raw chunks.  Detects whether the stream is OpenAI or Anthropic by
+    inspecting the first chunk.
+    """
+    if not chunks:
+        return {}
+    if chunks[0].get("type") in _ANTHROPIC_SSE_TYPES:
+        return assemble_anthropic_chunks(chunks)
+    return assemble_openai_chunks(chunks)
+
+
+def assemble_anthropic_chunks(chunks: list[dict]) -> dict:
+    """Assemble Anthropic SSE events into a message-shaped wire-format dict."""
+    if not chunks:
+        return {}
+
+    result: dict = {
+        "id": "",
+        "type": "message",
+        "role": "assistant",
+        "content": [],
+        "model": "",
+        "stop_reason": None,
+        "stop_sequence": None,
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
+    current_block: dict | None = None
+    partial_json = ""
+
+    for chunk in chunks:
+        ctype = chunk.get("type", "")
+
+        if ctype == "message_start":
+            msg = chunk.get("message", {})
+            result["id"] = msg.get("id", "")
+            result["model"] = msg.get("model", "")
+            usage = msg.get("usage", {})
+            result["usage"]["input_tokens"] = usage.get("input_tokens", 0)
+            result["usage"]["output_tokens"] = usage.get("output_tokens", 0)
+
+        elif ctype == "content_block_start":
+            block = dict(chunk.get("content_block", {}))
+            if block.get("type") == "text":
+                block.setdefault("text", "")
+            elif block.get("type") == "tool_use":
+                block.setdefault("input", {})
+                partial_json = ""
+            current_block = block
+
+        elif ctype == "content_block_delta":
+            if current_block is None:
+                continue
+            delta = chunk.get("delta", {})
+            dtype = delta.get("type")
+            if dtype == "text_delta":
+                current_block["text"] = current_block.get("text", "") + delta.get("text", "")
+            elif dtype == "input_json_delta":
+                partial_json += delta.get("partial_json", "")
+
+        elif ctype == "content_block_stop":
+            if current_block is not None:
+                if current_block.get("type") == "tool_use":
+                    try:
+                        current_block["input"] = json.loads(partial_json) if partial_json else {}
+                    except json.JSONDecodeError:
+                        current_block["input"] = {"raw": partial_json}
+                    partial_json = ""
+                result["content"].append(current_block)
+                current_block = None
+
+        elif ctype == "message_delta":
+            delta = chunk.get("delta", {})
+            if "stop_reason" in delta:
+                result["stop_reason"] = delta["stop_reason"]
+            if "stop_sequence" in delta:
+                result["stop_sequence"] = delta["stop_sequence"]
+            usage = chunk.get("usage", {})
+            if "output_tokens" in usage:
+                result["usage"]["output_tokens"] = usage["output_tokens"]
+
+    return result
+
+
 def assemble_openai_chunks(chunks: list[dict]) -> dict:
     """Assemble OpenAI streaming chunks into a chat.completion-like dict.
 

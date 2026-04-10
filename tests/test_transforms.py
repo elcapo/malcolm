@@ -143,6 +143,20 @@ class TestTranslationTransform:
         assert t.transform_request(body) == body
         assert t.transform_response(body) == body
 
+    def test_anthropic_to_openai_error_passthrough(self):
+        """OpenAI error bodies are forwarded unchanged instead of being translated."""
+        t = TranslationTransform("anthropic_to_openai")
+        err = {"error": {"message": "invalid key", "type": "authentication_error"}}
+        assert t.transform_response(err, model="gpt-4") == err
+
+    def test_openai_to_anthropic_error_passthrough(self):
+        """Anthropic error shapes are forwarded unchanged instead of being translated."""
+        t = TranslationTransform("openai_to_anthropic")
+        err1 = {"type": "error", "error": {"type": "authentication_error", "message": "bad"}}
+        assert t.transform_response(err1) == err1
+        err2 = {"error": {"message": "rate limit"}}
+        assert t.transform_response(err2) == err2
+
     def test_stream_line_anthropic_to_openai(self):
         t = TranslationTransform("anthropic_to_openai")
         state = {}

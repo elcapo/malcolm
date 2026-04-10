@@ -33,11 +33,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await storage.init()
         app.state.storage = storage
 
-        logging.basicConfig(
-            level=getattr(logging, settings.log_level.upper(), logging.INFO),
-            format="%(asctime)s %(name)s %(levelname)s %(message)s",
-        )
-
         logger.info(
             "malcolm started — target=%s storage=%s",
             settings.target_url,

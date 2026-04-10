@@ -187,6 +187,11 @@ def _anthropic_tool_to_openai(tool: dict) -> dict:
 
 def openai_response_to_anthropic(body: dict, model: str) -> dict:
     """Translate an OpenAI chat completion response to Anthropic message format."""
+    # Error bodies ({"error": {...}}) are passed through unchanged so the
+    # client sees the real upstream error instead of a fake empty message.
+    if "error" in body:
+        return body
+
     choice = {}
     if body.get("choices"):
         choice = body["choices"][0]
@@ -267,6 +272,14 @@ def openai_stream_to_anthropic_events(line: str, state: dict) -> list[str]:
         chunk = json.loads(line[6:])
     except json.JSONDecodeError:
         return []
+
+    # Mid-stream errors: OpenAI sends {"error": {...}} on a data line.
+    # Forward as an Anthropic error event so the client sees the failure
+    # instead of a silently-truncated stream.
+    if "error" in chunk:
+        return [
+            f"event: error\ndata: {json.dumps({'type': 'error', 'error': chunk['error']})}\n"
+        ]
 
     events = []
     model = chunk.get("model", state.get("model", ""))
@@ -508,6 +521,11 @@ def _openai_tool_to_anthropic(tool: dict) -> dict:
 
 def anthropic_response_to_openai(body: dict) -> dict:
     """Translate an Anthropic message response to OpenAI chat completion format."""
+    # Error bodies ({"error": {...}} or {"type": "error", ...}) are passed
+    # through unchanged so the client sees the real upstream error.
+    if "error" in body or body.get("type") == "error":
+        return body
+
     content_blocks = body.get("content", [])
     text_parts: list[str] = []
     tool_calls: list[dict] = []
@@ -586,6 +604,13 @@ def anthropic_stream_to_openai_lines(line: str, state: dict) -> list[str]:
 
     event_type = state.pop("_pending_event", data.get("type", ""))
     lines: list[str] = []
+
+    # Mid-stream errors: Anthropic sends `event: error\ndata: {"type":"error",
+    # "error": {...}}`.  Forward as an OpenAI-shaped error data line so the
+    # client sees the failure instead of a silently-truncated stream.
+    if event_type == "error" or data.get("type") == "error":
+        err = data.get("error", data)
+        return [f"data: {json.dumps({'error': err})}\n"]
 
     if event_type == "message_start":
         msg = data.get("message", {})
