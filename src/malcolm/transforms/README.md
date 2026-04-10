@@ -156,7 +156,7 @@ Precedence rules:
 
 External transforms should depend only on the Python standard library and their own runtime needs. Do not depend on `malcolm` itself.
 
-A complete working example lives at [`examples/malcolm-transform-example/`](../../../examples/malcolm-transform-example/). It is an independent pip package (own `pyproject.toml`, own venv, own tests) that implements a simple `header_logger` pass-through transform. Install it with `uv pip install -e examples/malcolm-transform-example` to see entry point discovery in action, or copy it as a starting point for your own transform.
+A complete working example lives in its own repository at [malcolm-proxy/malcolm-transform-example](https://github.com/malcolm-proxy/malcolm-transform-example). It is an independent pip package that implements a simple `header_logger` pass-through transform. Install it with `uv pip install git+https://github.com/malcolm-proxy/malcolm-transform-example` to see entry point discovery in action, or fork it as a starting point for your own transform.
 
 ## Guidelines
 
