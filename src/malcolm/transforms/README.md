@@ -7,10 +7,12 @@ Transforms are pluggable modules that modify requests and responses as they pass
 ```
 transforms/
     __init__.py              # REGISTRY + build_pipeline
-    _base.py                 # Transform protocol
+    _base.py                 # Transform protocol + Annotation dataclass
     ghostkey/
         __init__.py          # GhostKeyTransform + create()
         engine.py            # obfuscation engine
+    llm_annotator/
+        __init__.py          # LLMAnnotatorTransform + create()
     translation/
         __init__.py          # TranslationTransform + create()
         engine.py            # format conversion functions
@@ -158,8 +160,68 @@ External transforms should depend only on the Python standard library and their 
 
 A complete working example lives in its own repository at [malcolm-proxy/malcolm-transform-example](https://github.com/malcolm-proxy/malcolm-transform-example). It is an independent pip package that implements a simple `header_logger` pass-through transform. Install it with `uv pip install git+https://github.com/malcolm-proxy/malcolm-transform-example` to see entry point discovery in action, or fork it as a starting point for your own transform.
 
+## Annotations
+
+Transforms can optionally produce **annotations** — structured metadata about requests and responses that the TUI displays without knowing domain-specific semantics.
+
+To produce annotations, implement `annotate_request()` and/or `annotate_response()` on your transform class:
+
+```python
+from malcolm.transforms._base import Annotation
+
+class MyTransform:
+    name = "my_transform"
+
+    # ... standard transform methods ...
+
+    def annotate_request(
+        self,
+        request_body: dict,
+        request_headers: dict | None = None,
+    ) -> list[Annotation]:
+        annotations = []
+        if "model" in request_body:
+            annotations.append(Annotation(
+                key="model",
+                value=request_body["model"],
+                category="metadata",
+                display="badge",  # appears as a column in the TUI list
+            ))
+        return annotations
+
+    def annotate_response(
+        self,
+        response_body: dict | None,
+        response_chunks: list[dict] | None = None,
+    ) -> list[Annotation]:
+        annotations = []
+        if response_body and "usage" in response_body:
+            tokens = response_body["usage"].get("prompt_tokens", 0)
+            annotations.append(Annotation(
+                key="input_tokens",
+                value=str(tokens),
+                category="usage",
+                display="kv",
+            ))
+        return annotations
+```
+
+Each `Annotation` has:
+
+| Field | Description |
+|---|---|
+| `key` | Machine-readable identifier (e.g. `"model"`, `"tool_call.0"`) |
+| `value` | Always a string (JSON-serialize complex values) |
+| `category` | Grouping hint for the TUI (e.g. `"metadata"`, `"content"`, `"usage"`) |
+| `display` | Rendering hint: `"badge"` (list column), `"kv"` (key-value), `"text"` (long text), `"json"` (syntax-highlighted) |
+| `source` | Set automatically by the proxy: `"request"` or `"response"` |
+
+Both methods are **optional** and are not part of the `Transform` protocol. Transforms that don't implement them simply produce no annotations. `annotate_request()` is called with the original (pre-transform) request body; `annotate_response()` is called after the response is received, with the raw response body and streaming chunks.
+
+The built-in `llm_annotator` transform is a reference implementation that extracts LLM-specific metadata (model, session ID, messages, tool calls, token usage) as annotations.
+
 ## Guidelines
 
-- Transforms must be **self-contained** — no imports from `malcolm.formats`, `malcolm.models`, or other Malcolm modules outside the `transforms` package.
+- Transforms must be **self-contained** — no imports from `malcolm.formats`, `malcolm.models`, or other Malcolm modules outside the `transforms` package. The only exception is `llm_annotator`, which is a built-in bridge between the LLM parsing layer and the annotation system.
 - Heavy logic goes in `engine.py`, the `__init__.py` is a thin adapter.
 - The `create(config: dict)` factory receives the YAML config dict for this transform. Raise `ValueError` with a clear message if required config is missing.

@@ -9,6 +9,7 @@ from malcolm.transforms.ghostkey.engine import obfuscate, restore, scan_request
 
 class GhostKeyTransform:
     name = "ghostkey"
+    stores_snapshot = True
 
     def transform_request(self, body: dict) -> dict:
         text = json.dumps(body)

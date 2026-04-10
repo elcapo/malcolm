@@ -6,6 +6,7 @@ from malcolm.transforms.ghostkey.engine import reset_session
 from malcolm.transforms import (
     REGISTRY,
     GhostKeyTransform,
+    LLMAnnotatorTransform,
     TranslationTransform,
     _discover_entry_points,
     build_pipeline,
@@ -181,6 +182,7 @@ class TestRegistry:
     def test_known_transforms(self):
         assert "ghostkey" in REGISTRY
         assert "translation" in REGISTRY
+        assert "llm_annotator" in REGISTRY
 
     def test_ghostkey_factory(self):
         t = REGISTRY["ghostkey"]({})
@@ -189,6 +191,13 @@ class TestRegistry:
     def test_translation_factory(self):
         t = REGISTRY["translation"]({"direction": "anthropic_to_openai"})
         assert t.name == "translation"
+
+    def test_llm_annotator_factory(self):
+        t = REGISTRY["llm_annotator"]({})
+        assert t.name == "llm_annotator"
+        assert isinstance(t, LLMAnnotatorTransform)
+        assert hasattr(t, "annotate_request")
+        assert hasattr(t, "annotate_response")
 
     def test_translation_factory_missing_direction(self):
         with pytest.raises(ValueError, match="direction"):

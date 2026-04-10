@@ -14,6 +14,8 @@ from malcolm.transforms.translation.engine import (
 
 
 class TranslationTransform:
+    stores_snapshot = True
+
     def __init__(self, direction: str) -> None:
         self._direction = direction
         self.name = "translation"

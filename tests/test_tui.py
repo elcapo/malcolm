@@ -4,12 +4,12 @@ import pytest
 from rich.text import Text
 
 from malcolm.storage import RequestRecord, Storage
+from malcolm.transforms._base import Annotation
 from malcolm.tui import (
-    DetailScreen,
-    GroupsScreen,
+    AnnotationsScreen,
+    ContentScreen,
     MalcolmTUI,
-    MessagesScreen,
-    RequestsScreen,
+    RequestListScreen,
 )
 
 
@@ -24,7 +24,6 @@ async def storage(tmp_path):
 
 @pytest.fixture
 async def populated_storage(storage):
-    # Two requests in the same session (same model, close timestamps)
     record = RequestRecord(
         id="req-001",
         timestamp="2026-01-01T00:00:00",
@@ -55,7 +54,6 @@ async def populated_storage(storage):
     )
     await storage.save(record)
 
-    # Same model, 10 min later — same session
     stream_record = RequestRecord(
         id="req-002",
         timestamp="2026-01-01T00:10:00",
@@ -74,85 +72,16 @@ async def populated_storage(storage):
 
 
 @pytest.fixture
-async def anthropic_storage(storage):
-    """Storage with Anthropic-format records."""
-    record = RequestRecord(
-        id="req-anth-001",
-        timestamp="2026-01-01T00:00:00",
-        model="claude-opus-4-6",
-        stream=False,
-        request_body={
-            "model": "claude-opus-4-6",
-            "system": "You are helpful",
-            "messages": [
-                {"role": "user", "content": [{"type": "text", "text": "hello"}]},
-            ],
-        },
-        response_body={
-            "model": "claude-opus-4-6",
-            "id": "msg_123",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "Hi from Claude!"}],
-        },
-        status_code=200,
-        duration_ms=800.0,
-    )
-    await storage.save(record)
-
-    # Streaming Anthropic response — 5 min later, same session
-    stream_record = RequestRecord(
-        id="req-anth-002",
-        timestamp="2026-01-01T00:05:00",
-        model="claude-opus-4-6",
-        stream=True,
-        request_body={
-            "model": "claude-opus-4-6",
-            "system": "Be concise",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": "stream me"}]}],
-        },
-        response_chunks=[
-            {"type": "message_start", "message": {"role": "assistant"}},
-            {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
-            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello "}},
-            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "world!"}},
-            {"type": "content_block_stop", "index": 0},
-        ],
-        status_code=200,
-        duration_ms=600.0,
-    )
-    await storage.save(stream_record)
-
-    # Tool call — different model, separate session
-    tool_record = RequestRecord(
-        id="req-anth-003",
-        timestamp="2026-01-03T00:00:00",
-        model="claude-opus-4-6",
-        stream=False,
-        request_body={
-            "model": "claude-opus-4-6",
-            "messages": [{"role": "user", "content": "read a file"}],
-        },
-        response_body={
-            "id": "resp-tool",
-            "object": "chat.completion",
-            "created": 1700000000,
-            "model": "claude-opus-4-6",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{"function": {"name": "read_file"}, "type": "function", "id": "tc_1"}],
-                },
-                "finish_reason": "tool_calls",
-            }],
-        },
-        status_code=200,
-        duration_ms=300.0,
-    )
-    await storage.save(tool_record)
-    return storage
+async def annotated_storage(populated_storage):
+    """Storage with request and response annotations on first record."""
+    await populated_storage.save_annotations("req-001", "llm_annotator", [
+        Annotation(key="model", value="gpt-4o", category="metadata", display="badge", source="request"),
+        Annotation(key="session_id", value="sess-abc", category="metadata", display="kv", source="request"),
+        Annotation(key="system_prompt", value="You are helpful.", category="content", display="text", source="request"),
+        Annotation(key="assistant_message.0", value="Hi there!", category="content", display="text", source="response"),
+        Annotation(key="input_tokens", value="10", category="usage", display="kv", source="response"),
+    ])
+    return populated_storage
 
 
 # ---------------------------------------------------------------------------
@@ -165,173 +94,163 @@ async def test_tui_app_creates_with_db(tmp_path):
     assert app._db_path == db_path
 
 
-async def test_groups_screen_shows_groups(populated_storage):
+async def test_request_list_shows_requests(populated_storage):
     app = MalcolmTUI(db_path=populated_storage._db_path)
     async with app.run_test() as pilot:
         screen = app.screen
-        assert isinstance(screen, GroupsScreen)
+        assert isinstance(screen, RequestListScreen)
         table = screen.query_one("DataTable")
-        # No session hints → each record is its own group
         assert table.row_count == 2
 
 
-async def test_groups_screen_empty_db(storage):
+async def test_request_list_empty_db(storage):
     app = MalcolmTUI(db_path=storage._db_path)
     async with app.run_test() as pilot:
         table = app.screen.query_one("DataTable")
         assert table.row_count == 1  # placeholder row
 
 
-async def test_drill_into_requests(populated_storage):
+async def test_request_list_shows_uuid(populated_storage):
+    app = MalcolmTUI(db_path=populated_storage._db_path)
+    async with app.run_test() as pilot:
+        assert table_has_text(app.screen, "req-002")
+
+
+async def test_request_list_shows_status(populated_storage):
+    app = MalcolmTUI(db_path=populated_storage._db_path)
+    async with app.run_test() as pilot:
+        assert table_has_text(app.screen, "200")
+
+
+# ---------------------------------------------------------------------------
+# Badge annotations in list
+# ---------------------------------------------------------------------------
+
+async def test_badge_annotations_create_columns(annotated_storage):
+    app = MalcolmTUI(db_path=annotated_storage._db_path)
+    async with app.run_test() as pilot:
+        table = app.screen.query_one("DataTable")
+        col_labels = [str(table.columns[k].label) for k in table.columns]
+        assert "Model" in col_labels
+        assert table_has_text(app.screen, "gpt-4o")
+
+
+async def test_mixed_annotations_no_crash(annotated_storage):
+    """Records without badges still render fine alongside annotated ones."""
+    app = MalcolmTUI(db_path=annotated_storage._db_path)
+    async with app.run_test() as pilot:
+        table = app.screen.query_one("DataTable")
+        assert table.row_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Navigation: list -> annotations -> content
+# ---------------------------------------------------------------------------
+
+async def test_drill_into_annotations(populated_storage):
     app = MalcolmTUI(db_path=populated_storage._db_path)
     async with app.run_test() as pilot:
         await pilot.press("enter")
         await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, RequestsScreen)
-        table = screen.query_one("DataTable")
-        # No session hints → each group has 1 request
-        assert table.row_count == 1
+        assert isinstance(app.screen, AnnotationsScreen)
 
 
-async def test_drill_into_messages(populated_storage):
+async def test_annotations_shows_raw_json_entries(populated_storage):
     app = MalcolmTUI(db_path=populated_storage._db_path)
     async with app.run_test() as pilot:
-        await pilot.press("enter")  # → requests
-        await pilot.pause()
-        await pilot.press("enter")  # → messages of first request
+        # Navigate to req-001 (second row) which has both request and response body
+        await pilot.press("down")
+        await pilot.press("enter")
         await pilot.pause()
         screen = app.screen
-        assert isinstance(screen, MessagesScreen)
+        assert isinstance(screen, AnnotationsScreen)
+        # Should have at least raw request and raw response entries
+        assert table_has_text(screen, "raw request")
+        assert table_has_text(screen, "raw response")
 
 
-async def test_drill_into_detail(populated_storage):
+async def test_annotations_shows_annotation_rows(annotated_storage):
+    app = MalcolmTUI(db_path=annotated_storage._db_path)
+    async with app.run_test() as pilot:
+        # Navigate to req-001 (second row)
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, AnnotationsScreen)
+        assert table_has_text(screen, "model")
+        assert table_has_text(screen, "system_prompt")
+
+
+async def test_annotations_grouped_by_source(annotated_storage):
+    app = MalcolmTUI(db_path=annotated_storage._db_path)
+    async with app.run_test() as pilot:
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, AnnotationsScreen)
+        assert table_has_text(screen, "request")
+        assert table_has_text(screen, "response")
+
+
+async def test_drill_into_content(annotated_storage):
+    app = MalcolmTUI(db_path=annotated_storage._db_path)
+    async with app.run_test() as pilot:
+        await pilot.press("down")
+        await pilot.press("enter")  # -> annotations
+        await pilot.pause()
+        await pilot.press("enter")  # -> content of first annotation
+        await pilot.pause()
+        assert isinstance(app.screen, ContentScreen)
+
+
+async def test_drill_into_raw_json(populated_storage):
     app = MalcolmTUI(db_path=populated_storage._db_path)
     async with app.run_test() as pilot:
-        await pilot.press("enter")  # → requests
+        await pilot.press("down")      # navigate to req-001
+        await pilot.press("enter")  # -> annotations
         await pilot.pause()
-        await pilot.press("enter")  # → messages
+        await pilot.press("enter")  # -> first item (raw request)
         await pilot.pause()
-        await pilot.press("enter")  # → detail
-        await pilot.pause()
-        assert isinstance(app.screen, DetailScreen)
+        assert isinstance(app.screen, ContentScreen)
 
 
-async def test_back_navigation_escape(populated_storage):
+# ---------------------------------------------------------------------------
+# Back navigation
+# ---------------------------------------------------------------------------
+
+async def test_back_from_annotations(populated_storage):
     app = MalcolmTUI(db_path=populated_storage._db_path)
     async with app.run_test() as pilot:
         await pilot.press("enter")
         await pilot.pause()
-        assert isinstance(app.screen, RequestsScreen)
+        assert isinstance(app.screen, AnnotationsScreen)
         await pilot.press("escape")
         await pilot.pause()
-        assert isinstance(app.screen, GroupsScreen)
+        assert isinstance(app.screen, RequestListScreen)
 
 
-async def test_back_navigation_h(populated_storage):
+async def test_back_from_content(annotated_storage):
+    app = MalcolmTUI(db_path=annotated_storage._db_path)
+    async with app.run_test() as pilot:
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ContentScreen)
+        await pilot.press("left")
+        await pilot.pause()
+        assert isinstance(app.screen, AnnotationsScreen)
+
+
+async def test_enter_selects(populated_storage):
     app = MalcolmTUI(db_path=populated_storage._db_path)
     async with app.run_test() as pilot:
         await pilot.press("enter")
         await pilot.pause()
-        assert isinstance(app.screen, RequestsScreen)
-        await pilot.press("h")
-        await pilot.pause()
-        assert isinstance(app.screen, GroupsScreen)
-
-
-async def test_vim_navigation_l_selects(populated_storage):
-    app = MalcolmTUI(db_path=populated_storage._db_path)
-    async with app.run_test() as pilot:
-        await pilot.press("l")
-        await pilot.pause()
-        assert isinstance(app.screen, RequestsScreen)
-
-
-async def test_streaming_record_assembles_response(populated_storage):
-    app = MalcolmTUI(db_path=populated_storage._db_path)
-    async with app.run_test() as pilot:
-        await pilot.press("enter")  # → requests
-        await pilot.pause()
-        # First row is req-002 (newest, streaming)
-        await pilot.press("enter")  # → messages
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, MessagesScreen)
-        assert table_has_text(screen, "chunk")
-
-
-# ---------------------------------------------------------------------------
-# Anthropic format tests
-# ---------------------------------------------------------------------------
-
-async def test_anthropic_response_extracted(anthropic_storage):
-    app = MalcolmTUI(db_path=anthropic_storage._db_path)
-    async with app.run_test() as pilot:
-        # 3 groups (no session hints), newest first: req-anth-003, 002, 001
-        # Navigate to req-anth-001 (third group)
-        await pilot.press("j")
-        await pilot.press("j")
-        await pilot.press("enter")  # → requests (1 request)
-        await pilot.pause()
-        await pilot.press("enter")  # → messages
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, MessagesScreen)
-        assert table_has_text(screen, "Hi from Claude!")
-
-
-async def test_anthropic_streaming_assembled(anthropic_storage):
-    app = MalcolmTUI(db_path=anthropic_storage._db_path)
-    async with app.run_test() as pilot:
-        # req-anth-002 is second group (streaming)
-        await pilot.press("j")
-        await pilot.press("enter")  # → requests (1 request)
-        await pilot.pause()
-        await pilot.press("enter")  # → messages
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, MessagesScreen)
-        assert table_has_text(screen, "Hello world!")
-
-
-async def test_tool_call_shows_tool_name(anthropic_storage):
-    app = MalcolmTUI(db_path=anthropic_storage._db_path)
-    async with app.run_test() as pilot:
-        # First group is req-anth-003 (tool call, newest)
-        await pilot.press("enter")  # → requests
-        await pilot.pause()
-        await pilot.press("enter")  # → messages
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, MessagesScreen)
-        assert table_has_text(screen, "tool: read_file")
-
-
-# ---------------------------------------------------------------------------
-# Role styles
-# ---------------------------------------------------------------------------
-
-async def test_messages_have_role_styles(populated_storage):
-    app = MalcolmTUI(db_path=populated_storage._db_path)
-    async with app.run_test() as pilot:
-        # Second group is req-001 (non-streaming, has system+user+assistant)
-        await pilot.press("j")
-        await pilot.press("enter")  # → requests (1 request)
-        await pilot.pause()
-        await pilot.press("enter")  # → messages
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, MessagesScreen)
-        table = screen.query_one("DataTable")
-        col_keys = list(table.columns.keys())
-        role_col = col_keys[1]
-        role_texts = []
-        for row_key in table.rows:
-            role_cell = table.get_cell(row_key, role_col)
-            assert isinstance(role_cell, Text), f"Expected Text, got {type(role_cell)}"
-            role_texts.append(str(role_cell))
-        assert "user" in role_texts
-        assert "assistant" in role_texts
+        assert isinstance(app.screen, AnnotationsScreen)
 
 
 # ---------------------------------------------------------------------------
@@ -347,10 +266,7 @@ async def test_reload_picks_up_new_records(storage):
         record = RequestRecord(
             id="req-new",
             model="gpt-4o",
-            request_body={
-                "model": "gpt-4o",
-                "messages": [],
-            },
+            request_body={"model": "gpt-4o", "messages": []},
             status_code=200,
             duration_ms=100.0,
         )
@@ -359,8 +275,27 @@ async def test_reload_picks_up_new_records(storage):
         await pilot.press("r")
         await pilot.pause()
         table = app.screen.query_one("DataTable")
-        assert table.row_count == 1  # 1 group with 1 request
-        assert table_has_text(app.screen, "gpt-4o")
+        assert table.row_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Follow mode
+# ---------------------------------------------------------------------------
+
+async def test_follow_toggle(populated_storage):
+    app = MalcolmTUI(db_path=populated_storage._db_path)
+    async with app.run_test() as pilot:
+        screen = app.screen
+        assert isinstance(screen, RequestListScreen)
+        assert not screen._following
+
+        await pilot.press("f")
+        assert screen._following
+        assert "FOLLOW" in app.sub_title
+
+        await pilot.press("f")
+        assert not screen._following
+        assert "FOLLOW" not in app.sub_title
 
 
 # ---------------------------------------------------------------------------
@@ -370,44 +305,13 @@ async def test_reload_picks_up_new_records(storage):
 async def test_subtitle_updates_on_back(populated_storage):
     app = MalcolmTUI(db_path=populated_storage._db_path)
     async with app.run_test() as pilot:
-        assert "Sessions" in app.sub_title
+        assert "Requests" in app.sub_title
         await pilot.press("enter")
         await pilot.pause()
-        assert "gpt-4o" in app.sub_title
+        assert "Detail" in app.sub_title
         await pilot.press("escape")
         await pilot.pause()
-        assert "Sessions" in app.sub_title
-
-
-# ---------------------------------------------------------------------------
-# Detail screen
-# ---------------------------------------------------------------------------
-
-async def test_detail_shows_json(populated_storage):
-    app = MalcolmTUI(db_path=populated_storage._db_path)
-    async with app.run_test() as pilot:
-        await pilot.press("enter")  # → requests
-        await pilot.pause()
-        await pilot.press("enter")  # → messages
-        await pilot.pause()
-        await pilot.press("enter")  # → detail
-        await pilot.pause()
-        assert isinstance(app.screen, DetailScreen)
-
-
-async def test_detail_back_to_messages(populated_storage):
-    app = MalcolmTUI(db_path=populated_storage._db_path)
-    async with app.run_test() as pilot:
-        await pilot.press("enter")
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        assert isinstance(app.screen, DetailScreen)
-        await pilot.press("h")
-        await pilot.pause()
-        assert isinstance(app.screen, MessagesScreen)
+        assert "Requests" in app.sub_title
 
 
 # ---------------------------------------------------------------------------

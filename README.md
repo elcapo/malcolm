@@ -44,25 +44,26 @@ malcolm tui --db-path ./other.db     # use a specific database
 
 ## Terminal UI
 
-Malcolm includes a TUI for browsing logs directly from the terminal, without a browser.
+Malcolm includes an agnostic TUI for browsing logs directly from the terminal, without a browser.
 
-Three-level drill-down: **Requests** → **Messages** → **Message detail** (full JSON with syntax highlighting).
+Two-level drill-down: **Request list** → **Detail view** (annotations + full JSON with syntax highlighting).
 
-The request list shows model, status code, duration, and timestamp. Supports both OpenAI and Anthropic API formats transparently.
+The request list shows ID, timestamp, status code, and duration. When the `llm_annotator` transform is enabled, additional columns (model, stream) appear dynamically from annotations.
 
 | Key | Action |
 |---|---|
-| `↑` / `k` | Move up |
-| `↓` / `j` | Move down |
-| `→` / `l` / `Enter` | Open / select |
-| `←` / `h` / `Esc` | Go back |
-| `t` | Toggle view: raw → ghostkey → translation (messages/detail) |
-| `r` | Reload (returns to request list and refreshes) |
-| `w` | Toggle word wrap (detail view) |
-| `p` | Toggle dark/light theme |
+| `↑` `↓` | Navigate |
+| `Enter` | Open |
+| `Esc` | Back |
+| `n` / `p` | Next / previous page |
+| `f` | Toggle follow mode (auto-refresh every second) |
+| `c` | Copy to clipboard (content view) |
+| `w` | Toggle word wrap (content view) |
+| `r` | Reload |
+| `t` | Toggle dark/light theme |
 | `q` | Quit |
 
-The TUI reads directly from the SQLite database, so it works while the proxy is running. Press `r` to refresh and see new requests.
+The TUI reads directly from the SQLite database, so it works while the proxy is running. Use follow mode (`f`) to see new requests appear automatically, or press `r` to refresh manually.
 
 ## Configuration
 
@@ -96,6 +97,7 @@ Available transforms:
 
 | Transform | Config | Description |
 |---|---|---|
+| `llm_annotator` | *(none)* | Extracts LLM metadata (model, messages, tools, usage) as annotations for the TUI |
 | `ghostkey` | *(none)* | Obfuscates secrets (API keys, tokens) before they reach the backend |
 | `translation` | `direction` | Protocol translation: `anthropic_to_openai` or `openai_to_anthropic` |
 

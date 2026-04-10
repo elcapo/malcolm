@@ -26,7 +26,7 @@ dependencies = [
     "httpx>=0.27",
     "pydantic-settings>=2.0",
     "aiosqlite>=0.20",
-    "textual>=1.0",
+    "textual[syntax]>=1.0",
     "pyyaml>=6.0",
 ]
 
