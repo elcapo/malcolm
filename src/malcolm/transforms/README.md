@@ -123,6 +123,41 @@ transforms:
 
 Create tests covering your transform's behavior and its factory function.
 
+## Publishing a transform as a pip package
+
+Transforms do not need to live inside the Malcolm repo. Any installed pip package can register a transform via the `malcolm.transforms` entry point group, and Malcolm will discover it at startup.
+
+Minimum `pyproject.toml` for an external transform:
+
+```toml
+[project]
+name = "malcolm-transform-ratelimit"
+version = "0.1.0"
+
+[project.entry-points."malcolm.transforms"]
+ratelimit = "malcolm_transform_ratelimit:create"
+```
+
+The value on the right is an `import.path:attribute` reference to the `create(config: dict)` factory. The name on the left is how the transform is referenced in `malcolm.yaml`.
+
+Once installed (`uv pip install malcolm-transform-ratelimit`), the transform becomes available just like a built-in:
+
+```yaml
+transforms:
+  - ratelimit:
+      rpm: 100
+```
+
+Precedence rules:
+
+- Built-in names (`ghostkey`, `translation`) cannot be shadowed by external plugins. A collision is logged and the external registration is ignored.
+- If two external plugins claim the same name, the first one discovered wins.
+- A plugin whose `create` factory fails to import is logged as a warning and skipped — it will not crash Malcolm's startup.
+
+External transforms should depend only on the Python standard library and their own runtime needs. Do not depend on `malcolm` itself.
+
+A complete working example lives at [`examples/malcolm-transform-example/`](../../../examples/malcolm-transform-example/). It is an independent pip package (own `pyproject.toml`, own venv, own tests) that implements a simple `header_logger` pass-through transform. Install it with `uv pip install -e examples/malcolm-transform-example` to see entry point discovery in action, or copy it as a starting point for your own transform.
+
 ## Guidelines
 
 - Transforms must be **self-contained** — no imports from `malcolm.formats`, `malcolm.models`, or other Malcolm modules outside the `transforms` package.

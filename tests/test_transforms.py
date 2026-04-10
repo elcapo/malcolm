@@ -1,11 +1,13 @@
 import pytest
 import yaml
 
+import malcolm.transforms as transforms_module
 from malcolm.transforms.ghostkey.engine import reset_session
 from malcolm.transforms import (
     REGISTRY,
     GhostKeyTransform,
     TranslationTransform,
+    _discover_entry_points,
     build_pipeline,
 )
 
@@ -252,3 +254,98 @@ class TestBuildPipeline:
         cfg.write_text(yaml.dump({"transforms": ["nonexistent"]}))
         with pytest.raises(ValueError, match="Unknown transform.*nonexistent"):
             build_pipeline(str(cfg))
+
+
+# ── Entry point discovery ───────────────────────────────────────────────
+
+
+class _FakeTransform:
+    def __init__(self, name):
+        self.name = name
+
+    def transform_request(self, body):
+        return body
+
+    def transform_response(self, body, model=""):
+        return body
+
+    def transform_stream_line(self, line, state):
+        return [line]
+
+    def rewrite_path(self, path):
+        return path
+
+
+def _make_factory(name):
+    def factory(config):
+        return _FakeTransform(name)
+    return factory
+
+
+class _FakeEntryPoint:
+    def __init__(self, name, factory=None, load_error=None):
+        self.name = name
+        self._factory = factory
+        self._load_error = load_error
+
+    def load(self):
+        if self._load_error is not None:
+            raise self._load_error
+        return self._factory
+
+
+@pytest.fixture
+def registry_snapshot():
+    original = dict(transforms_module.REGISTRY)
+    yield transforms_module.REGISTRY
+    transforms_module.REGISTRY.clear()
+    transforms_module.REGISTRY.update(original)
+
+
+class TestEntryPointDiscovery:
+    def test_external_plugin_registered(self, registry_snapshot, tmp_path):
+        ep = _FakeEntryPoint("myplugin", factory=_make_factory("myplugin"))
+        _discover_entry_points([ep])
+
+        assert "myplugin" in registry_snapshot
+
+        cfg = tmp_path / "malcolm.yaml"
+        cfg.write_text(yaml.dump({"transforms": ["myplugin"]}))
+        pipeline = build_pipeline(str(cfg))
+        assert len(pipeline) == 1
+        assert pipeline[0].name == "myplugin"
+
+    def test_builtin_precedence(self, registry_snapshot, caplog):
+        original_ghostkey = registry_snapshot["ghostkey"]
+        hostile = _FakeEntryPoint("ghostkey", factory=_make_factory("hostile"))
+
+        with caplog.at_level("WARNING", logger="malcolm.transforms"):
+            _discover_entry_points([hostile])
+
+        assert registry_snapshot["ghostkey"] is original_ghostkey
+        assert any("ghostkey" in r.message for r in caplog.records)
+
+    def test_external_collision_first_wins(self, registry_snapshot):
+        first = _FakeEntryPoint("dup", factory=_make_factory("first"))
+        second = _FakeEntryPoint("dup", factory=_make_factory("second"))
+
+        _discover_entry_points([first, second])
+
+        instance = registry_snapshot["dup"]({})
+        assert instance.name == "first"
+
+    def test_broken_plugin_skipped(self, registry_snapshot, caplog):
+        broken = _FakeEntryPoint(
+            "broken", load_error=RuntimeError("boom")
+        )
+        good = _FakeEntryPoint("good", factory=_make_factory("good"))
+
+        with caplog.at_level("WARNING", logger="malcolm.transforms"):
+            _discover_entry_points([broken, good])
+
+        assert "broken" not in registry_snapshot
+        assert "good" in registry_snapshot
+        assert any(
+            "broken" in r.message and "boom" in r.message
+            for r in caplog.records
+        )

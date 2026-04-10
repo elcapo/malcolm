@@ -9,8 +9,9 @@ using the transform list defined in ``malcolm.yaml``.
 from __future__ import annotations
 
 import logging
+from importlib.metadata import entry_points
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 import yaml
 
@@ -21,6 +22,8 @@ from malcolm.transforms.translation import TranslationTransform
 from malcolm.transforms.translation import create as _create_translation
 
 logger = logging.getLogger("malcolm.transforms")
+
+ENTRY_POINT_GROUP = "malcolm.transforms"
 
 __all__ = [
     "Transform",
@@ -34,6 +37,32 @@ REGISTRY: dict[str, Callable[[dict], Transform]] = {
     "ghostkey": _create_ghostkey,
     "translation": _create_translation,
 }
+
+
+def _discover_entry_points(entries: Iterable) -> None:
+    """Register external transforms exposed via the ``malcolm.transforms`` entry point group.
+
+    Existing entries in ``REGISTRY`` win (built-ins cannot be shadowed, and the
+    first external registration for a given name beats later ones). A plugin
+    whose ``load()`` raises is logged and skipped, never propagated.
+    """
+    for ep in entries:
+        name = ep.name
+        if name in REGISTRY:
+            logger.warning(
+                "external transform %r shadowed by existing registration, ignoring",
+                name,
+            )
+            continue
+        try:
+            factory = ep.load()
+        except Exception as exc:
+            logger.warning("failed to load external transform %r: %s", name, exc)
+            continue
+        REGISTRY[name] = factory
+
+
+_discover_entry_points(entry_points(group=ENTRY_POINT_GROUP))
 
 
 def _load_transform_list(config_file: str) -> list[dict[str, dict]]:

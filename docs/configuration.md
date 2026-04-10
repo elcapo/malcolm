@@ -118,7 +118,7 @@ Enables protocol translation between Anthropic and OpenAI API formats. Translate
 - `anthropic_to_openai` — Client sends Anthropic format (`/v1/messages`), backend expects OpenAI format (`/v1/chat/completions`). Useful for running Claude Code against OpenAI or Ollama backends.
 - `openai_to_anthropic` — Client sends OpenAI format (`/v1/chat/completions`), backend expects Anthropic format (`/v1/messages`). Useful for running OpenAI-compatible tools against Anthropic's API.
 
-See [src/malcolm/transforms/README.md](../src/malcolm/transforms/README.md) for how to create custom transforms.
+In addition to the built-in transforms listed above, malcolm discovers external transforms installed as pip packages via the `malcolm.transforms` entry point group. Any installed plugin becomes available in `malcolm.yaml` just like a built-in. See [src/malcolm/transforms/README.md](../src/malcolm/transforms/README.md) for how to create and publish custom transforms.
 
 ## Example `.env` file
 

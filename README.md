@@ -99,6 +99,8 @@ Available transforms:
 | `ghostkey` | *(none)* | Obfuscates secrets (API keys, tokens) before they reach the backend |
 | `translation` | `direction` | Protocol translation: `anthropic_to_openai` or `openai_to_anthropic` |
 
+Additional transforms can be installed as pip packages — Malcolm discovers them at startup via Python entry points. See [`examples/malcolm-transform-example/`](examples/malcolm-transform-example/) for a working reference implementation you can install and try locally, or copy as a template for your own.
+
 See [docs/configuration.md](docs/configuration.md) for details and [docs/scenarios.md](docs/scenarios.md) for complete setup examples with Claude Code, OpenCode, and various backends (Anthropic, OpenAI, Ollama).
 
 ## How it works
