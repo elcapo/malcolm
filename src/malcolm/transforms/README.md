@@ -1,18 +1,18 @@
-# Transforms
+# Transforms and Annotators
 
-Transforms are pluggable modules that modify requests and responses as they pass through the Malcolm proxy. Each transform is a self-contained package inside `src/malcolm/transforms/`.
+Plugins are pluggable modules that either **transform** traffic (mutate requests and responses) or **annotate** traffic (observe it and produce structured metadata), or both. Each plugin is a self-contained package inside `src/malcolm/transforms/`.
 
 ## Architecture
 
 ```
 transforms/
-    __init__.py              # REGISTRY + build_pipeline
-    _base.py                 # Transform protocol + Annotation dataclass
+    __init__.py              # REGISTRY + build_pipeline + Pipeline
+    _base.py                 # Transform + Annotator protocols + Annotation
     ghostkey/
         __init__.py          # GhostKeyTransform + create()
         engine.py            # obfuscation engine
     llm_annotator/
-        __init__.py          # LLMAnnotatorTransform + create()
+        __init__.py          # LLMAnnotator (annotator only) + create()
     translation/
         __init__.py          # TranslationTransform + create()
         engine.py            # format conversion functions
@@ -103,7 +103,7 @@ Add one line to the `REGISTRY` dict in `src/malcolm/transforms/__init__.py`:
 ```python
 from malcolm.transforms.ratelimit import create as _create_ratelimit
 
-REGISTRY: dict[str, Callable[[dict], Transform]] = {
+REGISTRY: dict[str, Callable[[dict], object]] = {
     "ghostkey": _create_ghostkey,
     "translation": _create_translation,
     "ratelimit": _create_ratelimit,
@@ -160,19 +160,18 @@ External transforms should depend only on the Python standard library and their 
 
 A complete working example lives in its own repository at [malcolm-proxy/malcolm-transform-example](https://github.com/malcolm-proxy/malcolm-transform-example). It is an independent pip package that implements a simple `header_logger` pass-through transform. Install it with `uv pip install git+https://github.com/malcolm-proxy/malcolm-transform-example` to see entry point discovery in action, or fork it as a starting point for your own transform.
 
-## Annotations
+## Annotators
 
-Transforms can optionally produce **annotations** — structured metadata about requests and responses that the TUI displays without knowing domain-specific semantics.
+An **annotator** is a plugin that observes traffic and produces structured metadata about requests and responses, which the TUI displays without knowing domain-specific semantics. Annotators never mutate payloads — a failure inside `annotate_*` never breaks request forwarding.
 
-To produce annotations, implement `annotate_request()` and/or `annotate_response()` on your transform class:
+An annotator implements the `Annotator` protocol (defined in `_base.py`):
 
 ```python
 from malcolm.transforms._base import Annotation
 
-class MyTransform:
-    name = "my_transform"
 
-    # ... standard transform methods ...
+class MyAnnotator:
+    name = "my_annotator"
 
     def annotate_request(
         self,
@@ -204,7 +203,13 @@ class MyTransform:
                 display="kv",
             ))
         return annotations
+
+
+def create(config: dict) -> MyAnnotator:
+    return MyAnnotator()
 ```
+
+Register it exactly like a transform (add it to `REGISTRY` and list it in `malcolm.yaml`). At startup, `build_pipeline` classifies each plugin: if it implements `transform_request` it goes into `pipeline.transforms`, and if it implements `annotate_request` it goes into `pipeline.annotators`. A plugin that implements both protocols appears in both lists and runs in both phases.
 
 Each `Annotation` has:
 
@@ -216,12 +221,12 @@ Each `Annotation` has:
 | `display` | Rendering hint: `"badge"` (list column), `"kv"` (key-value), `"text"` (long text), `"json"` (syntax-highlighted) |
 | `source` | Set automatically by the proxy: `"request"` or `"response"` |
 
-Both methods are **optional** and are not part of the `Transform` protocol. Transforms that don't implement them simply produce no annotations. `annotate_request()` is called with the original (pre-transform) request body; `annotate_response()` is called after the response is received, with the raw response body and streaming chunks.
+`annotate_request()` is called with the original (pre-transform) request body. `annotate_response()` is called after the response is received, with the raw response body and streaming chunks. Both are called after the request record is persisted to storage, so any exception raised inside them is logged as a warning and never affects request forwarding.
 
-The built-in `llm_annotator` transform is a reference implementation that extracts LLM-specific metadata (model, session ID, messages, tool calls, token usage) as annotations.
+The built-in `llm_annotator` is a reference implementation that extracts LLM-specific metadata (model, session ID, messages, tool calls, token usage) as annotations.
 
 ## Guidelines
 
-- Transforms must be **self-contained** — no imports from `malcolm.formats`, `malcolm.models`, or other Malcolm modules outside the `transforms` package. The only exception is `llm_annotator`, which is a built-in bridge between the LLM parsing layer and the annotation system.
+- Transforms and annotators must be **self-contained** — no imports from `malcolm.formats`, `malcolm.models`, or other Malcolm modules outside the `transforms` package. The only exception is `llm_annotator`, which is a built-in bridge between the LLM parsing layer and the annotation system.
 - Heavy logic goes in `engine.py`, the `__init__.py` is a thin adapter.
-- The `create(config: dict)` factory receives the YAML config dict for this transform. Raise `ValueError` with a clear message if required config is missing.
+- The `create(config: dict)` factory receives the YAML config dict for this plugin. Raise `ValueError` with a clear message if required config is missing.

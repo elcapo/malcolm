@@ -1,30 +1,21 @@
 from malcolm.transforms._base import Annotation
-from malcolm.transforms.llm_annotator import LLMAnnotatorTransform, create
+from malcolm.transforms.llm_annotator import LLMAnnotator, create
 
 
-class TestLLMAnnotatorPassthrough:
-    def test_transform_request_is_passthrough(self):
-        t = LLMAnnotatorTransform()
-        body = {"model": "gpt-4", "messages": []}
-        assert t.transform_request(body) is body
+class TestLLMAnnotatorIsNotATransform:
+    """The annotator implements the Annotator protocol only, never a Transform."""
 
-    def test_transform_response_is_passthrough(self):
-        t = LLMAnnotatorTransform()
-        body = {"choices": []}
-        assert t.transform_response(body) is body
-
-    def test_transform_stream_line_is_passthrough(self):
-        t = LLMAnnotatorTransform()
-        assert t.transform_stream_line("data: {}", {}) == ["data: {}"]
-
-    def test_rewrite_path_is_passthrough(self):
-        t = LLMAnnotatorTransform()
-        assert t.rewrite_path("/v1/messages") == "/v1/messages"
+    def test_no_transform_methods(self):
+        t = LLMAnnotator()
+        assert not hasattr(t, "transform_request")
+        assert not hasattr(t, "transform_response")
+        assert not hasattr(t, "transform_stream_line")
+        assert not hasattr(t, "rewrite_path")
 
 
 class TestAnnotateRequest:
     def test_extracts_model(self):
-        t = LLMAnnotatorTransform()
+        t = LLMAnnotator()
         anns = t.annotate_request(
             request_body={"model": "gpt-4o", "messages": []},
         )
@@ -35,7 +26,7 @@ class TestAnnotateRequest:
         assert models[0].category == "metadata"
 
     def test_extracts_session_id(self):
-        t = LLMAnnotatorTransform()
+        t = LLMAnnotator()
         anns = t.annotate_request(
             request_body={
                 "model": "gpt-4o",
@@ -48,7 +39,7 @@ class TestAnnotateRequest:
         assert sessions[0].value == "sess-123"
 
     def test_extracts_system_prompt(self):
-        t = LLMAnnotatorTransform()
+        t = LLMAnnotator()
         anns = t.annotate_request(
             request_body={
                 "model": "claude-opus-4-6",
@@ -64,7 +55,7 @@ class TestAnnotateRequest:
         assert system[0].display == "text"
 
     def test_extracts_user_messages(self):
-        t = LLMAnnotatorTransform()
+        t = LLMAnnotator()
         anns = t.annotate_request(
             request_body={
                 "model": "gpt-4o",
@@ -83,13 +74,13 @@ class TestAnnotateRequest:
         assert users[1].value == "How are you?"
 
     def test_no_model_no_annotation(self):
-        t = LLMAnnotatorTransform()
+        t = LLMAnnotator()
         anns = t.annotate_request(request_body={})
         models = [a for a in anns if a.key == "model"]
         assert len(models) == 0
 
     def test_stream_badge(self):
-        t = LLMAnnotatorTransform()
+        t = LLMAnnotator()
         anns = t.annotate_request(
             request_body={"model": "gpt-4o", "messages": [], "stream": True},
         )
@@ -100,7 +91,7 @@ class TestAnnotateRequest:
 
 class TestAnnotateResponse:
     def test_extracts_tool_calls(self):
-        t = LLMAnnotatorTransform()
+        t = LLMAnnotator()
         anns = t.annotate_response(
             response_body={
                 "choices": [{
@@ -123,7 +114,7 @@ class TestAnnotateResponse:
         assert tools[0].value == "read_file"
 
     def test_extracts_assistant_message(self):
-        t = LLMAnnotatorTransform()
+        t = LLMAnnotator()
         anns = t.annotate_response(
             response_body={
                 "choices": [{"message": {"role": "assistant", "content": "Hello!"}}],
@@ -135,7 +126,7 @@ class TestAnnotateResponse:
         assert msgs[0].display == "text"
 
     def test_extracts_usage(self):
-        t = LLMAnnotatorTransform()
+        t = LLMAnnotator()
         anns = t.annotate_response(
             response_body={
                 "choices": [{"message": {"role": "assistant", "content": "hi"}}],
@@ -150,13 +141,13 @@ class TestAnnotateResponse:
         assert usage["output_tokens"] == "5"
 
     def test_empty_response_body(self):
-        t = LLMAnnotatorTransform()
+        t = LLMAnnotator()
         anns = t.annotate_response(response_body=None)
         assert anns == []
 
     def test_does_not_include_request_fields(self):
         """annotate_response should not extract model or session_id."""
-        t = LLMAnnotatorTransform()
+        t = LLMAnnotator()
         anns = t.annotate_response(
             response_body={
                 "choices": [{"message": {"role": "assistant", "content": "hi"}}],
@@ -169,7 +160,7 @@ class TestAnnotateResponse:
 class TestLLMAnnotatorFactory:
     def test_create_returns_instance(self):
         t = create({})
-        assert isinstance(t, LLMAnnotatorTransform)
+        assert isinstance(t, LLMAnnotator)
         assert t.name == "llm_annotator"
 
     def test_has_annotate_methods(self):
