@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from malcolm.translate import (
+from malcolm.transforms.translation.engine import (
     anthropic_request_to_openai,
     anthropic_response_to_openai,
     anthropic_stream_to_openai_lines,
@@ -491,6 +491,21 @@ class TestOpenAIStreamToAnthropicEvents:
         assert "content_block_delta" in event_types
         assert state.get("stop_reason") == "tool_use"
 
+    def test_error_passthrough(self):
+        """Mid-stream OpenAI errors must become Anthropic error events."""
+        state: dict = {}
+        line = 'data: {"error":{"message":"rate limited","type":"rate_limit_error"}}'
+        events = openai_stream_to_anthropic_events(line, state)
+
+        assert len(events) == 1
+        assert events[0].startswith("event: error\n")
+        assert 'data: ' in events[0]
+        payload_line = events[0].split("\n")[1]
+        payload = json.loads(payload_line[6:])
+        assert payload["type"] == "error"
+        assert payload["error"]["message"] == "rate limited"
+        assert payload["error"]["type"] == "rate_limit_error"
+
 
 # ===================================================================
 # Streaming: Anthropic SSE → OpenAI SSE
@@ -587,6 +602,34 @@ class TestAnthropicStreamToOpenAILines:
         # Finish reason should be tool_calls
         finish_chunks = [c for c in chunks if c["choices"][0].get("finish_reason")]
         assert finish_chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
+
+    def test_error_passthrough(self):
+        """Mid-stream Anthropic errors must become OpenAI-shaped error data lines."""
+        state: dict = {}
+        all_lines: list[str] = []
+
+        sse_lines = [
+            "event: error",
+            'data: {"type":"error","error":{"type":"overloaded_error","message":"server overloaded"}}',
+        ]
+        for line in sse_lines:
+            all_lines.extend(anthropic_stream_to_openai_lines(line, state))
+
+        assert len(all_lines) == 1
+        line_out = all_lines[0].strip()
+        assert line_out.startswith("data: ")
+        payload = json.loads(line_out[6:])
+        assert payload["error"]["type"] == "overloaded_error"
+        assert payload["error"]["message"] == "server overloaded"
+
+    def test_error_without_event_line(self):
+        """If the error arrives as a plain data line with type=error, still forward it."""
+        state: dict = {}
+        line = 'data: {"type":"error","error":{"type":"overloaded_error","message":"nope"}}'
+        lines = anthropic_stream_to_openai_lines(line, state)
+        assert len(lines) == 1
+        payload = json.loads(lines[0].strip()[6:])
+        assert payload["error"]["message"] == "nope"
 
 
 # ===================================================================

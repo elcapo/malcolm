@@ -1,15 +1,13 @@
 """
-ghostkey.py — secret obfuscation engine for Malcolm.
+Secret obfuscation engine for the ghostkey transform.
 
 Scans request bodies for secret values (API keys, tokens, credentials)
 and replaces them with format-preserving fakes.  Restores real values
 in responses so the client always sees originals while the upstream API
 never receives them.
 
-Used by the transform pipeline (``GhostKeyTransform`` in transforms.py).
-
-Enable via environment variable:
-    MALCOLM_GHOSTKEY_ENABLED=true
+Wrapped by ``GhostKeyTransform`` in ``malcolm.transforms.ghostkey``.
+Enable by adding ``ghostkey`` to the transforms list in ``malcolm.yaml``.
 """
 
 import json
@@ -18,8 +16,6 @@ import random
 import re
 import string
 import threading
-
-from malcolm.formats import _find_request_parser
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +62,6 @@ _RAW_PATTERNS = [
     r"railway_[a-zA-Z0-9]{32,}",
     r"eyJ[a-zA-Z0-9_\-]+\.eyJ[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+",
     r"(?<=Bearer )[a-zA-Z0-9\-_=+/]{20,}",
-    r"\b[0-9a-f]{32,64}\b",
 ]
 
 TOKEN_PATTERNS = [re.compile(p) for p in _RAW_PATTERNS]
@@ -169,28 +164,63 @@ def _extract_strings(obj) -> list[str]:
     return strings
 
 
+def _extract_tool_arguments(messages: list) -> list[str]:
+    """Extract tool call argument strings from messages (OpenAI & Anthropic)."""
+    args: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        # OpenAI: tool_calls[].function.arguments
+        for tc in msg.get("tool_calls", []):
+            fn = tc.get("function", {})
+            if fn.get("arguments"):
+                args.append(fn["arguments"])
+        # Anthropic: content[].{type: "tool_use"}.input
+        for block in msg.get("content", []) if isinstance(msg.get("content"), list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                inp = block.get("input")
+                if isinstance(inp, dict):
+                    args.append(json.dumps(inp))
+    return args
+
+
+def _extract_tool_results(messages: list) -> list[str]:
+    """Extract tool result content from messages (OpenAI & Anthropic)."""
+    results: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        # OpenAI: role=tool, content=string
+        if msg.get("role") == "tool" and isinstance(msg.get("content"), str):
+            results.append(msg["content"])
+        # Anthropic: content[].{type: "tool_result"}.content
+        for block in msg.get("content", []) if isinstance(msg.get("content"), list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                c = block.get("content", "")
+                if isinstance(c, str):
+                    results.append(c)
+    return results
+
+
 def scan_request(body: str) -> None:
     scan_tokens(body)
     try:
         data = json.loads(body)
-        parser = _find_request_parser(data)
-        if parser is None:
+        messages = data.get("messages", [])
+        if not isinstance(messages, list):
             return
-        messages = parser.parse_request_messages(data)
 
-        # Collect file paths from tool_call arguments
+        # Check tool call arguments for sensitive file paths
         has_sensitive_file = False
-        for msg in messages:
-            for tc in msg.tool_calls:
-                for s in _extract_strings(json.loads(tc.arguments)) if tc.arguments else []:
-                    if is_sensitive_file(s):
-                        has_sensitive_file = True
+        for arg_str in _extract_tool_arguments(messages):
+            for s in _extract_strings(json.loads(arg_str)) if arg_str.startswith("{") else _extract_strings(arg_str):
+                if is_sensitive_file(s):
+                    has_sensitive_file = True
 
         # If a sensitive file was read, scan tool result contents
         if has_sensitive_file:
-            for msg in messages:
-                if msg.tool_result:
-                    scan_env_content(msg.tool_result)
+            for result in _extract_tool_results(messages):
+                scan_env_content(result)
     except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
         pass
 

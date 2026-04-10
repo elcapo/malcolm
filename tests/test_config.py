@@ -28,16 +28,16 @@ def test_settings_defaults(monkeypatch):
     assert settings.db_path == "malcolm.db"
     assert settings.log_level == "info"
     assert settings.target_api_key == ""
-    assert settings.translate == ""
+    assert settings.config_file == "malcolm.yaml"
 
 
-def test_settings_translate(monkeypatch):
+def test_settings_config_file(monkeypatch):
     monkeypatch.setenv("MALCOLM_TARGET_URL", "https://api.example.com/v1")
-    monkeypatch.setenv("MALCOLM_TRANSLATE", "anthropic_to_openai")
+    monkeypatch.setenv("MALCOLM_CONFIG_FILE", "custom.yaml")
 
     settings = Settings()
 
-    assert settings.translate == "anthropic_to_openai"
+    assert settings.config_file == "custom.yaml"
 
 
 def test_settings_requires_target_url(monkeypatch):

@@ -66,13 +66,19 @@ uv run malcolm \
 
 ### Using OpenAI's models in Claude Code
 
-Claude Code speaks the Anthropic protocol (`/v1/messages`), not the OpenAI protocol (`/v1/chat/completions`). To bridge this gap, enable Malcolm's protocol translation:
+Claude Code speaks the Anthropic protocol (`/v1/messages`), not the OpenAI protocol (`/v1/chat/completions`). To bridge this gap, enable Malcolm's protocol translation.
+
+In `malcolm.yaml`:
+```yaml
+transforms:
+  - translation:
+      direction: anthropic_to_openai
+```
 
 ```bash
 uv run malcolm \
   --malcolm-target-url=https://api.openai.com/v1 \
-  --malcolm-target-api-key=sk-... \
-  --malcolm-translate=anthropic_to_openai
+  --malcolm-target-api-key=sk-...
 ```
 
 Then point Claude Code at Malcolm as if it were an Anthropic backend:

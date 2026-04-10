@@ -1,12 +1,12 @@
-"""Tests for malcolm.ghostkey — secret obfuscation."""
+"""Tests for malcolm.transforms.ghostkey.engine — secret obfuscation."""
 
 import json
 
 import pytest
 
-from malcolm import ghostkey
+from malcolm.transforms.ghostkey import engine as ghostkey
 
-from malcolm.ghostkey import (
+from malcolm.transforms.ghostkey.engine import (
     is_sensitive_file,
     obfuscate,
     reset_session,
@@ -79,10 +79,13 @@ class TestScanTokens:
         scan_tokens(token)
         assert session_stats()["secrets_protected"] == 1
 
-    def test_hex_string_32(self):
-        token = "a" * 32
-        scan_tokens(token)
-        assert session_stats()["secrets_protected"] == 1
+    def test_bare_hex_not_matched(self):
+        # Bare hex strings (git SHAs, MD5/SHA256 hashes, UUIDs without dashes)
+        # are too ambiguous to treat as secrets — only service-prefixed tokens
+        # are registered.
+        scan_tokens("a" * 32)
+        scan_tokens("e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0")  # git SHA-ish
+        assert session_stats()["secrets_protected"] == 0
 
     def test_short_string_ignored(self):
         scan_tokens("short")

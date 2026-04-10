@@ -1,10 +1,13 @@
 import pytest
+import yaml
 
-from malcolm.config import Settings
-from malcolm.ghostkey import reset_session
+import malcolm.transforms as transforms_module
+from malcolm.transforms.ghostkey.engine import reset_session
 from malcolm.transforms import (
+    REGISTRY,
     GhostKeyTransform,
     TranslationTransform,
+    _discover_entry_points,
     build_pipeline,
 )
 
@@ -29,7 +32,6 @@ class TestGhostKeyTransform:
         }
         result = t.transform_request(body)
         assert "sk-ant-ABCDEFGHIJKLMNOPQRSTUVWXYZ" not in str(result)
-        # Prefix up to first separator is preserved
         assert result["messages"][0]["content"].startswith("my key is sk-")
 
     def test_restores_secrets_in_response(self):
@@ -40,7 +42,6 @@ class TestGhostKeyTransform:
             ]
         }
         obfuscated = t.transform_request(body)
-        # Simulate backend echoing the obfuscated key
         response = {"content": obfuscated["messages"][0]["content"]}
         restored = t.transform_response(response)
         assert "sk-ant-ABCDEFGHIJKLMNOPQRSTUVWXYZ" in restored["content"]
@@ -64,7 +65,6 @@ class TestGhostKeyTransform:
 
     def test_stream_line_restore(self):
         t = GhostKeyTransform()
-        # Register a secret first
         t.transform_request({"messages": [{"role": "user", "content": "sk-ant-ABCDEFGHIJKLMNOPQRSTUVWXYZ"}]})
         obfuscated = t.transform_request({"messages": [{"role": "user", "content": "sk-ant-ABCDEFGHIJKLMNOPQRSTUVWXYZ"}]})
         fake_key = obfuscated["messages"][0]["content"]
@@ -145,10 +145,23 @@ class TestTranslationTransform:
         assert t.transform_request(body) == body
         assert t.transform_response(body) == body
 
+    def test_anthropic_to_openai_error_passthrough(self):
+        """OpenAI error bodies are forwarded unchanged instead of being translated."""
+        t = TranslationTransform("anthropic_to_openai")
+        err = {"error": {"message": "invalid key", "type": "authentication_error"}}
+        assert t.transform_response(err, model="gpt-4") == err
+
+    def test_openai_to_anthropic_error_passthrough(self):
+        """Anthropic error shapes are forwarded unchanged instead of being translated."""
+        t = TranslationTransform("openai_to_anthropic")
+        err1 = {"type": "error", "error": {"type": "authentication_error", "message": "bad"}}
+        assert t.transform_response(err1) == err1
+        err2 = {"error": {"message": "rate limit"}}
+        assert t.transform_response(err2) == err2
+
     def test_stream_line_anthropic_to_openai(self):
         t = TranslationTransform("anthropic_to_openai")
         state = {}
-        # OpenAI SSE line → should produce Anthropic SSE events
         line = 'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}'
         result = t.transform_stream_line(line, state)
         assert isinstance(result, list)
@@ -161,42 +174,178 @@ class TestTranslationTransform:
         assert isinstance(result, list)
 
 
+# ── Registry ─────────────────────────────────────────────────────────────
+
+
+class TestRegistry:
+    def test_known_transforms(self):
+        assert "ghostkey" in REGISTRY
+        assert "translation" in REGISTRY
+
+    def test_ghostkey_factory(self):
+        t = REGISTRY["ghostkey"]({})
+        assert t.name == "ghostkey"
+
+    def test_translation_factory(self):
+        t = REGISTRY["translation"]({"direction": "anthropic_to_openai"})
+        assert t.name == "translation"
+
+    def test_translation_factory_missing_direction(self):
+        with pytest.raises(ValueError, match="direction"):
+            REGISTRY["translation"]({})
+
+
 # ── build_pipeline ──────────────────────────────────────────────────────
 
 
 class TestBuildPipeline:
-    def test_empty_pipeline(self, monkeypatch):
-        monkeypatch.setenv("MALCOLM_TARGET_URL", "http://test")
-        monkeypatch.setenv("MALCOLM_GHOSTKEY_ENABLED", "false")
-        monkeypatch.delenv("MALCOLM_TRANSLATE", raising=False)
-        settings = Settings(_env_file=None)
-        pipeline = build_pipeline(settings)
+    def test_no_config_file(self, tmp_path):
+        pipeline = build_pipeline(str(tmp_path / "nonexistent.yaml"))
         assert pipeline == []
 
-    def test_ghostkey_only(self, monkeypatch):
-        monkeypatch.setenv("MALCOLM_TARGET_URL", "http://test")
-        monkeypatch.setenv("MALCOLM_GHOSTKEY_ENABLED", "true")
-        monkeypatch.delenv("MALCOLM_TRANSLATE", raising=False)
-        settings = Settings(_env_file=None)
-        pipeline = build_pipeline(settings)
+    def test_empty_transforms(self, tmp_path):
+        cfg = tmp_path / "malcolm.yaml"
+        cfg.write_text(yaml.dump({"transforms": []}))
+        assert build_pipeline(str(cfg)) == []
+
+    def test_ghostkey_only(self, tmp_path):
+        cfg = tmp_path / "malcolm.yaml"
+        cfg.write_text(yaml.dump({"transforms": ["ghostkey"]}))
+        pipeline = build_pipeline(str(cfg))
         assert len(pipeline) == 1
         assert pipeline[0].name == "ghostkey"
 
-    def test_translation_only(self, monkeypatch):
-        monkeypatch.setenv("MALCOLM_TARGET_URL", "http://test")
-        monkeypatch.setenv("MALCOLM_GHOSTKEY_ENABLED", "false")
-        monkeypatch.setenv("MALCOLM_TRANSLATE", "anthropic_to_openai")
-        settings = Settings(_env_file=None)
-        pipeline = build_pipeline(settings)
+    def test_translation_with_config(self, tmp_path):
+        cfg = tmp_path / "malcolm.yaml"
+        cfg.write_text(yaml.dump({
+            "transforms": [{"translation": {"direction": "anthropic_to_openai"}}],
+        }))
+        pipeline = build_pipeline(str(cfg))
         assert len(pipeline) == 1
         assert pipeline[0].name == "translation"
 
-    def test_both_ghostkey_first(self, monkeypatch):
-        monkeypatch.setenv("MALCOLM_TARGET_URL", "http://test")
-        monkeypatch.setenv("MALCOLM_GHOSTKEY_ENABLED", "true")
-        monkeypatch.setenv("MALCOLM_TRANSLATE", "openai_to_anthropic")
-        settings = Settings(_env_file=None)
-        pipeline = build_pipeline(settings)
+    def test_both_respects_order(self, tmp_path):
+        cfg = tmp_path / "malcolm.yaml"
+        cfg.write_text(yaml.dump({
+            "transforms": [
+                "ghostkey",
+                {"translation": {"direction": "openai_to_anthropic"}},
+            ],
+        }))
+        pipeline = build_pipeline(str(cfg))
         assert len(pipeline) == 2
         assert pipeline[0].name == "ghostkey"
         assert pipeline[1].name == "translation"
+
+    def test_reverse_order(self, tmp_path):
+        cfg = tmp_path / "malcolm.yaml"
+        cfg.write_text(yaml.dump({
+            "transforms": [
+                {"translation": {"direction": "openai_to_anthropic"}},
+                "ghostkey",
+            ],
+        }))
+        pipeline = build_pipeline(str(cfg))
+        assert pipeline[0].name == "translation"
+        assert pipeline[1].name == "ghostkey"
+
+    def test_unknown_transform_raises(self, tmp_path):
+        cfg = tmp_path / "malcolm.yaml"
+        cfg.write_text(yaml.dump({"transforms": ["nonexistent"]}))
+        with pytest.raises(ValueError, match="Unknown transform.*nonexistent"):
+            build_pipeline(str(cfg))
+
+
+# ── Entry point discovery ───────────────────────────────────────────────
+
+
+class _FakeTransform:
+    def __init__(self, name):
+        self.name = name
+
+    def transform_request(self, body):
+        return body
+
+    def transform_response(self, body, model=""):
+        return body
+
+    def transform_stream_line(self, line, state):
+        return [line]
+
+    def rewrite_path(self, path):
+        return path
+
+
+def _make_factory(name):
+    def factory(config):
+        return _FakeTransform(name)
+    return factory
+
+
+class _FakeEntryPoint:
+    def __init__(self, name, factory=None, load_error=None):
+        self.name = name
+        self._factory = factory
+        self._load_error = load_error
+
+    def load(self):
+        if self._load_error is not None:
+            raise self._load_error
+        return self._factory
+
+
+@pytest.fixture
+def registry_snapshot():
+    original = dict(transforms_module.REGISTRY)
+    yield transforms_module.REGISTRY
+    transforms_module.REGISTRY.clear()
+    transforms_module.REGISTRY.update(original)
+
+
+class TestEntryPointDiscovery:
+    def test_external_plugin_registered(self, registry_snapshot, tmp_path):
+        ep = _FakeEntryPoint("myplugin", factory=_make_factory("myplugin"))
+        _discover_entry_points([ep])
+
+        assert "myplugin" in registry_snapshot
+
+        cfg = tmp_path / "malcolm.yaml"
+        cfg.write_text(yaml.dump({"transforms": ["myplugin"]}))
+        pipeline = build_pipeline(str(cfg))
+        assert len(pipeline) == 1
+        assert pipeline[0].name == "myplugin"
+
+    def test_builtin_precedence(self, registry_snapshot, caplog):
+        original_ghostkey = registry_snapshot["ghostkey"]
+        hostile = _FakeEntryPoint("ghostkey", factory=_make_factory("hostile"))
+
+        with caplog.at_level("WARNING", logger="malcolm.transforms"):
+            _discover_entry_points([hostile])
+
+        assert registry_snapshot["ghostkey"] is original_ghostkey
+        assert any("ghostkey" in r.message for r in caplog.records)
+
+    def test_external_collision_first_wins(self, registry_snapshot):
+        first = _FakeEntryPoint("dup", factory=_make_factory("first"))
+        second = _FakeEntryPoint("dup", factory=_make_factory("second"))
+
+        _discover_entry_points([first, second])
+
+        instance = registry_snapshot["dup"]({})
+        assert instance.name == "first"
+
+    def test_broken_plugin_skipped(self, registry_snapshot, caplog):
+        broken = _FakeEntryPoint(
+            "broken", load_error=RuntimeError("boom")
+        )
+        good = _FakeEntryPoint("good", factory=_make_factory("good"))
+
+        with caplog.at_level("WARNING", logger="malcolm.transforms"):
+            _discover_entry_points([broken, good])
+
+        assert "broken" not in registry_snapshot
+        assert "good" in registry_snapshot
+        assert any(
+            "broken" in r.message and "boom" in r.message
+            for r in caplog.records
+        )

@@ -66,7 +66,9 @@ The TUI reads directly from the SQLite database, so it works while the proxy is 
 
 ## Configuration
 
-All configuration is via environment variables:
+### Environment variables
+
+Core proxy settings via environment variables (or `.env` file):
 
 | Variable | Default | Description |
 |---|---|---|
@@ -77,8 +79,27 @@ All configuration is via environment variables:
 | `MALCOLM_STORAGE_ENABLED` | `true` | Enable/disable SQLite persistence |
 | `MALCOLM_DB_PATH` | `malcolm.db` | SQLite database file path |
 | `MALCOLM_LOG_LEVEL` | `info` | Log level |
-| `MALCOLM_TRANSLATE` | *(empty)* | Protocol translation: `anthropic_to_openai` or `openai_to_anthropic` |
-| `MALCOLM_GHOSTKEY_ENABLED` | `false` | Obfuscate secrets (API keys, tokens) before they reach the backend |
+| `MALCOLM_CONFIG_FILE` | `malcolm.yaml` | Path to the transform pipeline config file |
+
+### Transform pipeline
+
+Transforms are configured in `malcolm.yaml`. Each transform is a pluggable module that can modify requests and responses as they pass through the proxy. The list order defines the pipeline order.
+
+```yaml
+transforms:
+  - ghostkey
+  - translation:
+      direction: anthropic_to_openai
+```
+
+Available transforms:
+
+| Transform | Config | Description |
+|---|---|---|
+| `ghostkey` | *(none)* | Obfuscates secrets (API keys, tokens) before they reach the backend |
+| `translation` | `direction` | Protocol translation: `anthropic_to_openai` or `openai_to_anthropic` |
+
+Additional transforms can be installed as pip packages — Malcolm discovers them at startup via Python entry points. See [malcolm-proxy/malcolm-transform-example](https://github.com/malcolm-proxy/malcolm-transform-example) for a working reference implementation you can install directly (`uv pip install git+https://github.com/malcolm-proxy/malcolm-transform-example`) or fork as a template for your own.
 
 See [docs/configuration.md](docs/configuration.md) for details and [docs/scenarios.md](docs/scenarios.md) for complete setup examples with Claude Code, OpenCode, and various backends (Anthropic, OpenAI, Ollama).
 
@@ -100,7 +121,7 @@ flowchart LR
 
 Malcolm acts as a catch-all proxy: it accepts requests in any format (OpenAI, Anthropic, or any other HTTP API), captures the full request, forwards it to the configured backend, captures the full response (including streaming), and stores everything in a local SQLite database for later inspection.
 
-When client and backend speak different protocols, Malcolm can translate between them on the fly. Set `MALCOLM_TRANSLATE` to `anthropic_to_openai` or `openai_to_anthropic` and Malcolm will automatically convert requests, responses, and streaming events; including path rewriting (from `/v1/messages` to `/v1/chat/completions` and viceversa).
+When client and backend speak different protocols, Malcolm can translate between them on the fly. Add `translation` to the transform pipeline in `malcolm.yaml` with the desired direction, and Malcolm will automatically convert requests, responses, and streaming events; including path rewriting (from `/v1/messages` to `/v1/chat/completions` and viceversa).
 
 See [docs/architecture.md](docs/architecture.md) for the full architecture overview.
 

@@ -1,4 +1,5 @@
 import argparse
+import logging
 import sys
 
 import uvicorn
@@ -19,8 +20,7 @@ def _parse_args() -> dict:
     parser.add_argument("--malcolm-storage-enabled", dest="storage_enabled")
     parser.add_argument("--malcolm-db-path", dest="db_path")
     parser.add_argument("--malcolm-log-level", dest="log_level")
-    parser.add_argument("--malcolm-translate", dest="translate")
-    parser.add_argument("--malcolm-ghostkey-enabled", dest="ghostkey_enabled")
+    parser.add_argument("--malcolm-config-file", dest="config_file")
 
     args = parser.parse_args()
     # Return only the explicitly provided arguments
@@ -43,6 +43,12 @@ def main():
 
     overrides = _parse_args()
     settings = Settings(**overrides)
+
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+
     app = create_app(settings)
     uvicorn.run(
         app,
