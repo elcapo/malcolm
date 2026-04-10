@@ -86,6 +86,54 @@ def _build_headers(
     return headers
 
 
+async def _run_request_annotators(
+    transforms: list[Transform],
+    record_id: str,
+    request_body: dict,
+    request_headers: dict,
+    storage: Storage | NullStorage,
+) -> None:
+    """Call ``annotate_request()`` on transforms that support it."""
+    for t in transforms:
+        if not hasattr(t, "annotate_request"):
+            continue
+        try:
+            annotations = t.annotate_request(request_body, request_headers)
+            for a in annotations:
+                a.source = "request"
+            if annotations:
+                await storage.save_annotations(record_id, t.name, annotations)
+        except Exception as exc:
+            logger.warning(
+                "request=%s annotate_request %s failed: %s",
+                record_id, t.name, exc,
+            )
+
+
+async def _run_response_annotators(
+    transforms: list[Transform],
+    record_id: str,
+    response_body: dict | None,
+    response_chunks: list[dict] | None,
+    storage: Storage | NullStorage,
+) -> None:
+    """Call ``annotate_response()`` on transforms that support it."""
+    for t in transforms:
+        if not hasattr(t, "annotate_response"):
+            continue
+        try:
+            annotations = t.annotate_response(response_body, response_chunks)
+            for a in annotations:
+                a.source = "response"
+            if annotations:
+                await storage.save_annotations(record_id, t.name, annotations)
+        except Exception as exc:
+            logger.warning(
+                "request=%s annotate_response %s failed: %s",
+                record_id, t.name, exc,
+            )
+
+
 async def forward_request(
     body: dict,
     request: Request,
@@ -113,7 +161,8 @@ async def forward_request(
     forwarded_body = body
     for t in transforms:
         forwarded_body = t.transform_request(forwarded_body)
-        transform_snapshots[t.name] = {"request_body": forwarded_body}
+        if t.stores_snapshot:
+            transform_snapshots[t.name] = {"request_body": forwarded_body}
 
     # ── Resolve path & forward ────────────────────────────────────
     path = request.url.path
@@ -149,7 +198,8 @@ async def forward_request(
         model = body.get("model", "")
         for t in reversed(transforms):
             client_response = t.transform_response(client_response, model=model)
-            transform_snapshots[t.name]["response_body"] = client_response
+            if t.name in transform_snapshots:
+                transform_snapshots[t.name]["response_body"] = client_response
 
         logger.info(
             "request=%s model=%s status=%s duration=%.0fms",
@@ -167,6 +217,9 @@ async def forward_request(
             await storage.save_transform(TransformRecord(
                 request_id=record.id, transform_type=name, **snapshot,
             ))
+        await _run_request_annotators(
+            transforms, record.id, body, captured_headers, storage,
+        )
         return JSONResponse(
             status_code=502,
             content={"error": {"message": f"Backend error: {exc}", "type": "proxy_error"}},
@@ -177,6 +230,13 @@ async def forward_request(
         await storage.save_transform(TransformRecord(
             request_id=record.id, transform_type=name, **snapshot,
         ))
+    await _run_request_annotators(
+        transforms, record.id, body, captured_headers, storage,
+    )
+    await _run_response_annotators(
+        transforms, record.id, record.response_body, record.response_chunks,
+        storage,
+    )
     return JSONResponse(status_code=response.status_code, content=client_response)
 
 
@@ -207,7 +267,8 @@ async def forward_request_stream(
     forwarded_body = body
     for t in transforms:
         forwarded_body = t.transform_request(forwarded_body)
-        transform_snapshots[t.name] = {"request_body": forwarded_body}
+        if t.stores_snapshot:
+            transform_snapshots[t.name] = {"request_body": forwarded_body}
 
     # ── Resolve path & forward ────────────────────────────────────
     path = request.url.path
@@ -269,6 +330,13 @@ async def forward_request_stream(
                 await storage.save_transform(TransformRecord(
                     request_id=record.id, transform_type=name, **snapshot,
                 ))
+            await _run_request_annotators(
+                transforms, record.id, body, captured_headers, storage,
+            )
+            await _run_response_annotators(
+                transforms, record.id, record.response_body,
+                record.response_chunks, storage,
+            )
 
     return StreamingResponse(
         _stream_generator(),

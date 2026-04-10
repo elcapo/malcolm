@@ -15,9 +15,11 @@ from typing import Callable, Iterable
 
 import yaml
 
-from malcolm.transforms._base import Transform
+from malcolm.transforms._base import Annotation, Transform
 from malcolm.transforms.ghostkey import GhostKeyTransform
 from malcolm.transforms.ghostkey import create as _create_ghostkey
+from malcolm.transforms.llm_annotator import LLMAnnotatorTransform
+from malcolm.transforms.llm_annotator import create as _create_llm_annotator
 from malcolm.transforms.translation import TranslationTransform
 from malcolm.transforms.translation import create as _create_translation
 
@@ -26,8 +28,10 @@ logger = logging.getLogger("malcolm.transforms")
 ENTRY_POINT_GROUP = "malcolm.transforms"
 
 __all__ = [
+    "Annotation",
     "Transform",
     "GhostKeyTransform",
+    "LLMAnnotatorTransform",
     "TranslationTransform",
     "build_pipeline",
     "REGISTRY",
@@ -35,6 +39,7 @@ __all__ = [
 
 REGISTRY: dict[str, Callable[[dict], Transform]] = {
     "ghostkey": _create_ghostkey,
+    "llm_annotator": _create_llm_annotator,
     "translation": _create_translation,
 }
 

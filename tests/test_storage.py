@@ -318,3 +318,93 @@ async def test_null_storage_get_transforms():
     ns = NullStorage()
     result = await ns.get_transforms("any-id")
     assert result == []
+
+
+# Annotation tests
+
+
+async def test_save_and_get_annotations(storage):
+    from malcolm.transforms._base import Annotation
+
+    record = _make_record()
+    await storage.save(record)
+
+    annotations = [
+        Annotation(key="model", value="gpt-4", category="metadata", display="badge", source="request"),
+        Annotation(key="session_id", value="abc123", category="metadata", display="kv", source="request"),
+    ]
+    await storage.save_annotations(record.id, "llm_annotator", annotations)
+
+    result = await storage.get_annotations(record.id)
+    assert len(result) == 2
+    keys = {a["key"] for a in result}
+    assert keys == {"model", "session_id"}
+    for a in result:
+        assert a["transform_name"] == "llm_annotator"
+        assert a["source"] == "request"
+
+
+async def test_get_includes_annotations(storage):
+    from malcolm.transforms._base import Annotation
+
+    record = _make_record()
+    await storage.save(record)
+    await storage.save_annotations(record.id, "llm_annotator", [
+        Annotation(key="model", value="gpt-4", category="metadata", display="badge"),
+    ])
+
+    result = await storage.get(record.id)
+    assert "annotations" in result
+    assert len(result["annotations"]) == 1
+    assert result["annotations"][0]["key"] == "model"
+
+
+async def test_annotations_cascade_delete(storage):
+    from malcolm.transforms._base import Annotation
+
+    record = _make_record()
+    await storage.save(record)
+    await storage.save_annotations(record.id, "llm_annotator", [
+        Annotation(key="model", value="gpt-4", category="metadata", display="badge"),
+    ])
+
+    await storage.delete(record.id)
+    result = await storage.get_annotations(record.id)
+    assert result == []
+
+
+async def test_list_page_with_badges(storage):
+    from malcolm.transforms._base import Annotation
+
+    for i in range(3):
+        record = _make_record(
+            timestamp=f"2026-01-01T00:{i:02d}:00",
+            model=f"model-{i}",
+        )
+        await storage.save(record)
+        if i < 2:  # Only annotate first 2 records
+            await storage.save_annotations(record.id, "llm_annotator", [
+                Annotation(key="model", value=f"model-{i}", category="metadata", display="badge"),
+            ])
+
+    results = await storage.list_page_with_badges(page_size=10)
+    assert len(results) == 3
+    # Most recent first (model-2) has no badges
+    assert results[0]["badges"] == {}
+    # Second and third have badges
+    assert results[1]["badges"]["model"] == "model-1"
+    assert results[2]["badges"]["model"] == "model-0"
+
+
+async def test_list_page_with_badges_empty(storage):
+    results = await storage.list_page_with_badges()
+    assert results == []
+
+
+async def test_null_storage_annotations():
+    from malcolm.transforms._base import Annotation
+
+    ns = NullStorage()
+    await ns.save_annotations("any", "t", [Annotation("k", "v")])
+    assert await ns.get_annotations("any") == []
+    assert await ns.list_page_with_badges() == []

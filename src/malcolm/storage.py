@@ -3,8 +3,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import aiosqlite
+
+if TYPE_CHECKING:
+    from malcolm.transforms._base import Annotation
 
 
 _CREATE_TABLE = """
@@ -31,6 +35,19 @@ CREATE TABLE IF NOT EXISTS request_transforms (
     response_body TEXT,
     response_chunks TEXT,
     PRIMARY KEY (request_id, transform_type)
+)
+"""
+
+_CREATE_ANNOTATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS request_annotations (
+    request_id TEXT NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+    transform_name TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    display TEXT NOT NULL DEFAULT 'kv',
+    source TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (request_id, transform_name, key)
 )
 """
 
@@ -70,6 +87,7 @@ class Storage:
         await self._db.execute("PRAGMA foreign_keys = ON")
         await self._db.execute(_CREATE_TABLE)
         await self._db.execute(_CREATE_TRANSFORMS_TABLE)
+        await self._db.execute(_CREATE_ANNOTATIONS_TABLE)
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_requests_timestamp "
             "ON requests (timestamp DESC)"
@@ -78,10 +96,22 @@ class Storage:
             "CREATE INDEX IF NOT EXISTS idx_transforms_request_id "
             "ON request_transforms (request_id)"
         )
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_annotations_key_value "
+            "ON request_annotations (key, value)"
+        )
         # Migration: add request_headers column if it doesn't exist yet
         try:
             await self._db.execute(
                 "ALTER TABLE requests ADD COLUMN request_headers TEXT"
+            )
+        except Exception:
+            pass  # column already exists
+        # Migration: add source column to annotations if it doesn't exist yet
+        try:
+            await self._db.execute(
+                "ALTER TABLE request_annotations ADD COLUMN "
+                "source TEXT NOT NULL DEFAULT ''"
             )
         except Exception:
             pass  # column already exists
@@ -218,7 +248,79 @@ class Storage:
             if result.get(key) is not None:
                 result[key] = json.loads(result[key])
         result["transforms"] = await self.get_transforms(record_id)
+        result["annotations"] = await self.get_annotations(record_id)
         return result
+
+    async def save_annotations(
+        self,
+        request_id: str,
+        transform_name: str,
+        annotations: list[Annotation],
+    ) -> None:
+        assert self._db is not None
+        await self._db.executemany(
+            """
+            INSERT OR REPLACE INTO request_annotations
+                (request_id, transform_name, key, value, category, display, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    request_id, transform_name,
+                    a.key, a.value, a.category, a.display, a.source,
+                )
+                for a in annotations
+            ],
+        )
+        await self._db.commit()
+
+    async def get_annotations(self, request_id: str) -> list[dict]:
+        assert self._db is not None
+        self._db.row_factory = aiosqlite.Row
+        cursor = await self._db.execute(
+            "SELECT transform_name, key, value, category, display, source "
+            "FROM request_annotations WHERE request_id = ?",
+            (request_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def list_page_with_badges(
+        self, page_size: int = 50, before: str | None = None,
+    ) -> list[dict]:
+        """Fetch a page of requests with their badge annotations.
+
+        Returns dicts with request fields plus a ``badges`` dict
+        containing only badge-display annotations for efficient list rendering.
+        """
+        assert self._db is not None
+        self._db.row_factory = aiosqlite.Row
+        if before:
+            cursor = await self._db.execute(
+                "SELECT id, timestamp, status_code, duration_ms, error "
+                "FROM requests WHERE timestamp < ? "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (before, page_size),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT id, timestamp, status_code, duration_ms, error "
+                "FROM requests ORDER BY timestamp DESC LIMIT ?",
+                (page_size,),
+            )
+        rows = await cursor.fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            badge_cursor = await self._db.execute(
+                "SELECT key, value FROM request_annotations "
+                "WHERE request_id = ? AND display = 'badge'",
+                (d["id"],),
+            )
+            badge_rows = await badge_cursor.fetchall()
+            d["badges"] = {r["key"]: r["value"] for r in badge_rows}
+            results.append(d)
+        return results
 
     async def delete(self, record_id: str) -> bool:
         assert self._db is not None
@@ -247,10 +349,26 @@ class NullStorage:
     async def get_transforms(self, request_id: str) -> list[dict]:
         return []
 
+    async def save_annotations(
+        self,
+        request_id: str,
+        transform_name: str,
+        annotations: list[Annotation],
+    ) -> None:
+        pass
+
+    async def get_annotations(self, request_id: str) -> list[dict]:
+        return []
+
     async def list_recent(self, limit: int = 50) -> list[dict]:
         return []
 
     async def list_page_full(
+        self, page_size: int = 50, before: str | None = None,
+    ) -> list[dict]:
+        return []
+
+    async def list_page_with_badges(
         self, page_size: int = 50, before: str | None = None,
     ) -> list[dict]:
         return []
