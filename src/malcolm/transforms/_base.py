@@ -1,4 +1,4 @@
-"""Transform protocol — the interface every transform must implement."""
+"""Transform and Annotator protocols — interfaces every plugin must implement."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from typing import Protocol
 
 @dataclass
 class Annotation:
-    """A structured observation produced by a transform about a request.
+    """A structured observation produced by an annotator about a request.
 
-    Annotations let transforms report domain-specific information (model name,
+    Annotations let annotators report domain-specific information (model name,
     session ID, tool calls, …) without coupling the storage or TUI layers to
     any particular domain.
     """
@@ -33,6 +33,8 @@ class Annotation:
 
 
 class Transform(Protocol):
+    """A plugin that mutates request/response traffic."""
+
     name: str
     stores_snapshot: bool
 
@@ -43,3 +45,26 @@ class Transform(Protocol):
     def transform_stream_line(self, line: str, state: dict) -> list[str]: ...
 
     def rewrite_path(self, path: str) -> str: ...
+
+
+class Annotator(Protocol):
+    """A plugin that observes traffic and produces :class:`Annotation` objects.
+
+    Annotators never mutate the payloads they receive.  They are invoked after
+    the raw record is persisted, so a failure inside ``annotate_*`` never
+    breaks request forwarding.
+    """
+
+    name: str
+
+    def annotate_request(
+        self,
+        request_body: dict,
+        request_headers: dict | None = None,
+    ) -> list[Annotation]: ...
+
+    def annotate_response(
+        self,
+        response_body: dict | None,
+        response_chunks: list[dict] | None = None,
+    ) -> list[Annotation]: ...

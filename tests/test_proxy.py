@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 from malcolm.config import Settings
 from malcolm.formats import assemble_anthropic_chunks, assemble_chunks, assemble_openai_chunks
 from malcolm.proxy import _build_target_url, forward_request, forward_request_stream
-from malcolm.storage import NullStorage, RequestRecord
-from malcolm.transforms import TranslationTransform, build_pipeline
+from malcolm.storage import NullStorage, RequestRecord, Storage
+from malcolm.transforms import LLMAnnotator, TranslationTransform, build_pipeline
 
 
 # --- Unit tests for helpers ---
@@ -396,3 +396,115 @@ def test_ghostkey_restores_on_error_response(settings, null_storage):
     assert secret in data["error"]["message"]
     assert fake_token not in data["error"]["message"]
     reset_session()
+
+
+async def test_forward_persists_annotations(tmp_path, settings):
+    """End-to-end: annotator runs through the proxy and annotations land in SQLite."""
+    response_body = {
+        "id": "chatcmpl-ann",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Hello there"},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15},
+    }
+    backend = _make_fake_backend(response_body=response_body)
+
+    storage = Storage(str(tmp_path / "ann.db"))
+    await storage.init()
+    try:
+        annotators = [LLMAnnotator()]
+
+        app = FastAPI()
+
+        @app.post("/v1/chat/completions")
+        async def proxy(request: Request):
+            body = await request.json()
+            transport = httpx.ASGITransport(app=backend)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                return await forward_request(
+                    body, request, client, settings, storage,
+                    annotators=annotators,
+                )
+
+        test_client = TestClient(app)
+        resp = test_client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert resp.status_code == 200
+
+        page = await storage.list_page_with_badges(page_size=10)
+        assert len(page) == 1
+        record_id = page[0]["id"]
+        # Badge columns are populated from annotations with display='badge'
+        assert page[0]["badges"]["model"] == "gpt-4o"
+
+        all_annotations = await storage.get_annotations(record_id)
+        by_key = {a["key"]: a for a in all_annotations}
+        # Request-side annotations
+        assert by_key["model"]["source"] == "request"
+        assert by_key["model"]["transform_name"] == "llm_annotator"
+        assert by_key["user_message.0"]["source"] == "request"
+        assert by_key["user_message.0"]["value"] == "hi"
+        # Response-side annotations
+        assert by_key["assistant_message.0"]["source"] == "response"
+        assert by_key["assistant_message.0"]["value"] == "Hello there"
+        assert by_key["input_tokens"]["value"] == "12"
+        assert by_key["output_tokens"]["value"] == "3"
+    finally:
+        await storage.close()
+
+
+async def test_forward_annotator_failure_does_not_break_request(tmp_path, settings):
+    """An exception inside annotate_* is logged but the client still gets its response."""
+
+    class _BrokenAnnotator:
+        name = "broken"
+
+        def annotate_request(self, request_body, request_headers=None):
+            raise RuntimeError("boom on request")
+
+        def annotate_response(self, response_body, response_chunks=None):
+            raise RuntimeError("boom on response")
+
+    backend = _make_fake_backend(
+        response_body={"id": "x", "choices": [], "model": "gpt-4"},
+    )
+
+    storage = Storage(str(tmp_path / "broken.db"))
+    await storage.init()
+    try:
+        app = FastAPI()
+
+        @app.post("/v1/chat/completions")
+        async def proxy(request: Request):
+            body = await request.json()
+            transport = httpx.ASGITransport(app=backend)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                return await forward_request(
+                    body, request, client, settings, storage,
+                    annotators=[_BrokenAnnotator()],
+                )
+
+        test_client = TestClient(app)
+        resp = test_client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 200
+
+        # The request was persisted even though the annotator blew up.
+        page = await storage.list_page_with_badges(page_size=10)
+        assert len(page) == 1
+        annotations = await storage.get_annotations(page[0]["id"])
+        assert annotations == []
+    finally:
+        await storage.close()

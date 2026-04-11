@@ -1,24 +1,32 @@
 """
-transforms — pluggable request/response transform pipeline for Malcolm.
+transforms — pluggable pipeline of Transforms and Annotators for Malcolm.
 
-Each transform lives in its own module and exposes a ``create(config)``
-factory.  The pipeline is assembled at startup via ``build_pipeline()``
-using the transform list defined in ``malcolm.yaml``.
+Each plugin lives in its own module and exposes a ``create(config)`` factory.
+Plugins come in two shapes:
+
+* **Transforms** mutate request/response bodies, stream lines and paths.
+* **Annotators** observe traffic and produce structured :class:`Annotation`
+  objects for storage and TUI rendering.
+
+A single plugin may implement either or both protocols.  The pipeline is
+assembled at startup via ``build_pipeline()`` using the list defined in
+``malcolm.yaml``.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Callable, Iterable
 
 import yaml
 
-from malcolm.transforms._base import Annotation, Transform
+from malcolm.transforms._base import Annotation, Annotator, Transform
 from malcolm.transforms.ghostkey import GhostKeyTransform
 from malcolm.transforms.ghostkey import create as _create_ghostkey
-from malcolm.transforms.llm_annotator import LLMAnnotatorTransform
+from malcolm.transforms.llm_annotator import LLMAnnotator
 from malcolm.transforms.llm_annotator import create as _create_llm_annotator
 from malcolm.transforms.translation import TranslationTransform
 from malcolm.transforms.translation import create as _create_translation
@@ -27,25 +35,74 @@ logger = logging.getLogger("malcolm.transforms")
 
 ENTRY_POINT_GROUP = "malcolm.transforms"
 
+
+@dataclass
+class Pipeline:
+    """Assembled pipeline of transforms and annotators."""
+
+    transforms: list[Transform] = field(default_factory=list)
+    annotators: list[Annotator] = field(default_factory=list)
+
+
 __all__ = [
     "Annotation",
+    "Annotator",
     "Transform",
     "GhostKeyTransform",
-    "LLMAnnotatorTransform",
+    "LLMAnnotator",
     "TranslationTransform",
+    "Pipeline",
     "build_pipeline",
     "REGISTRY",
 ]
 
-REGISTRY: dict[str, Callable[[dict], Transform]] = {
+REGISTRY: dict[str, Callable[[dict], object]] = {
     "ghostkey": _create_ghostkey,
     "llm_annotator": _create_llm_annotator,
     "translation": _create_translation,
 }
 
 
+_TRANSFORM_METHODS = (
+    "transform_request",
+    "transform_response",
+    "transform_stream_line",
+    "rewrite_path",
+)
+_ANNOTATOR_METHODS = ("annotate_request", "annotate_response")
+
+
+def _classify(plugin: object, name: str) -> tuple[bool, bool]:
+    """Return ``(is_transform, is_annotator)`` or raise on partial protocol.
+
+    A plugin that implements *any* method of a protocol must implement *all*
+    of them.  Partial implementations are almost always typos and would cause
+    silent failures at runtime.
+    """
+    transform_present = [
+        m for m in _TRANSFORM_METHODS if callable(getattr(plugin, m, None))
+    ]
+    annotator_present = [
+        m for m in _ANNOTATOR_METHODS if callable(getattr(plugin, m, None))
+    ]
+
+    if transform_present and len(transform_present) != len(_TRANSFORM_METHODS):
+        missing = sorted(set(_TRANSFORM_METHODS) - set(transform_present))
+        raise ValueError(
+            f"Plugin {name!r} is a partial Transform "
+            f"(missing methods: {missing})"
+        )
+    if annotator_present and len(annotator_present) != len(_ANNOTATOR_METHODS):
+        missing = sorted(set(_ANNOTATOR_METHODS) - set(annotator_present))
+        raise ValueError(
+            f"Plugin {name!r} is a partial Annotator "
+            f"(missing methods: {missing})"
+        )
+    return bool(transform_present), bool(annotator_present)
+
+
 def _discover_entry_points(entries: Iterable) -> None:
-    """Register external transforms exposed via the ``malcolm.transforms`` entry point group.
+    """Register external plugins exposed via the ``malcolm.transforms`` entry point group.
 
     Existing entries in ``REGISTRY`` win (built-ins cannot be shadowed, and the
     first external registration for a given name beats later ones). A plugin
@@ -55,14 +112,14 @@ def _discover_entry_points(entries: Iterable) -> None:
         name = ep.name
         if name in REGISTRY:
             logger.warning(
-                "external transform %r shadowed by existing registration, ignoring",
+                "external plugin %r shadowed by existing registration, ignoring",
                 name,
             )
             continue
         try:
             factory = ep.load()
         except Exception as exc:
-            logger.warning("failed to load external transform %r: %s", name, exc)
+            logger.warning("failed to load external plugin %r: %s", name, exc)
             continue
         REGISTRY[name] = factory
 
@@ -71,7 +128,7 @@ _discover_entry_points(entry_points(group=ENTRY_POINT_GROUP))
 
 
 def _load_transform_list(config_file: str) -> list[dict[str, dict]]:
-    """Load the transforms list from a YAML config file.
+    """Load the plugin list from a YAML config file.
 
     Each entry is either a plain string (no config) or a single-key dict
     (name → config dict).  Returns a normalised list of ``{name: config}``
@@ -94,22 +151,39 @@ def _load_transform_list(config_file: str) -> list[dict[str, dict]]:
     return result
 
 
-def build_pipeline(config_file: str = "malcolm.yaml") -> list[Transform]:
-    """Assemble the transform pipeline from the YAML config file."""
+def build_pipeline(config_file: str = "malcolm.yaml") -> Pipeline:
+    """Assemble the pipeline from the YAML config file.
+
+    Each plugin in the config is instantiated and classified into
+    :attr:`Pipeline.transforms` and/or :attr:`Pipeline.annotators` based on
+    the methods it implements.  A plugin that implements both protocols
+    appears in both lists.
+    """
     entries = _load_transform_list(config_file)
 
-    pipeline: list[Transform] = []
+    pipeline = Pipeline()
     for entry in entries:
         for name, config in entry.items():
             factory = REGISTRY.get(name)
             if factory is None:
                 raise ValueError(
-                    f"Unknown transform: {name!r}. "
+                    f"Unknown plugin: {name!r}. "
                     f"Available: {sorted(REGISTRY)}"
                 )
-            pipeline.append(factory(config))
+            plugin = factory(config)
+            is_transform, is_annotator = _classify(plugin, name)
+            if not (is_transform or is_annotator):
+                raise ValueError(
+                    f"Plugin {name!r} is neither a Transform nor an Annotator"
+                )
+            if is_transform:
+                pipeline.transforms.append(plugin)
+            if is_annotator:
+                pipeline.annotators.append(plugin)
 
-    if pipeline:
-        logger.info("transform pipeline: %s", [t.name for t in pipeline])
+    if pipeline.transforms:
+        logger.info("transforms: %s", [t.name for t in pipeline.transforms])
+    if pipeline.annotators:
+        logger.info("annotators: %s", [a.name for a in pipeline.annotators])
 
     return pipeline

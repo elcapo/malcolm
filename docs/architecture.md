@@ -38,18 +38,19 @@ Two implementations:
 - **`Storage`**: Real SQLite persistence using `aiosqlite` with WAL mode for concurrent access. Stores full request/response JSON, streaming chunks, timing, and errors.
 - **`NullStorage`**: No-op implementation used when `MALCOLM_STORAGE_ENABLED=false`. Same interface, does nothing.
 
-Two tables:
+Three tables:
 - **`requests`**: Original unmodified data — what the client sent and what the backend returned.
 - **`request_transforms`**: Transform outputs keyed by `(request_id, transform_type)`. Each row stores how the request/response looked after a specific transform (e.g. `"ghostkey"`, `"translation"`). Cascade-deletes with the parent request.
+- **`request_annotations`**: Structured observations keyed by `(request_id, transform_name, key)`. Each row is one `Annotation` (key, value, category, display hint, source phase) produced by an annotator. Cascade-deletes with the parent request.
 
-### `transforms.py` — Transform Pipeline
+### `transforms/` — Transforms and Annotators
 
-Pluggable pipeline that modifies requests before they reach the backend and responses before they reach the client. Each transform implements the `Transform` protocol:
+Pluggable plugin pipeline. Two protocols live side by side in `_base.py`:
 
-- **`GhostKeyTransform`**: Scans for secrets and replaces them with format-preserving fakes. Restores originals in responses. Delegates to core functions in `ghostkey.py`.
-- **`TranslationTransform`**: Converts between Anthropic and OpenAI API formats. Delegates to pure functions in `translate.py`.
+- **`Transform`**: mutates request/response bodies, stream lines and URL paths. Implementors: `GhostKeyTransform` (format-preserving secret obfuscation), `TranslationTransform` (Anthropic ↔ OpenAI conversion).
+- **`Annotator`**: observes traffic and returns `Annotation` objects. Implementor: `LLMAnnotator` (extracts model, session, messages, tool calls and token usage as structured annotations).
 
-The pipeline is assembled at startup via `build_pipeline(settings)`. Transforms are applied in order on requests and in reverse order on responses. Each transform's output is persisted to the `request_transforms` table so the TUI can show both raw and transformed data.
+A single plugin may implement both protocols; the pipeline does not care. `build_pipeline(config_file)` returns a `Pipeline(transforms, annotators)` dataclass and classifies each plugin into the lists it qualifies for. Transforms are applied in forward order on requests and reverse order on responses. Annotators run after the raw record is persisted, so any exception inside `annotate_*` is logged as a warning and never breaks forwarding. Each transform's output is persisted to `request_transforms`; each annotator's output is persisted to `request_annotations`.
 
 ### `proxy.py` — Core Proxy Logic
 
@@ -92,13 +93,13 @@ Loads settings and starts uvicorn. Registered as the `malcolm` console script.
 
 1. Client sends a request to malcolm
 2. malcolm parses the request body and creates a `RequestRecord` with a UUID and timestamp
-3. The raw request body is saved to the `requests` table
-4. The transform pipeline runs on the request (ghostkey → translation), each step saved to `request_transforms`
-5. The transformed request is forwarded to the backend
-6. The raw backend response is saved to the `requests` table
-7. The transform pipeline runs in reverse on the response (translation → ghostkey), each step saved to `request_transforms`
+3. The transform pipeline runs on the request in forward order (e.g. ghostkey → translation); snapshots of each step are held in memory
+4. The transformed request is forwarded to the backend
+5. The transform pipeline runs in reverse on the response (translation → ghostkey)
+6. The raw `RequestRecord` is persisted to `requests`; per-transform snapshots are persisted to `request_transforms`
+7. Annotators run on the original request body and on the raw response body; their `Annotation` objects are persisted to `request_annotations`
 8. The transformed response is returned to the client
-9. For streaming: SSE lines are transformed on the fly and raw backend chunks are accumulated for storage
+9. For streaming: SSE lines are transformed on the fly, raw backend chunks are accumulated for storage, and annotators run at stream close over the assembled response
 
 ## Design Principles
 

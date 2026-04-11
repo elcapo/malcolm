@@ -63,20 +63,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return await forward_request_stream(
                     body, request, request.app.state.client,
                     request.app.state.settings, request.app.state.storage,
-                    transforms=pipeline,
+                    transforms=pipeline.transforms,
+                    annotators=pipeline.annotators,
                 )
             else:
                 return await forward_request(
                     body, request, request.app.state.client,
                     request.app.state.settings, request.app.state.storage,
-                    transforms=pipeline,
+                    transforms=pipeline.transforms,
+                    annotators=pipeline.annotators,
                 )
         else:
             # GET, DELETE, HEAD, OPTIONS — forward without body
             return await forward_request(
                 {}, request, request.app.state.client,
                 request.app.state.settings, request.app.state.storage,
-                transforms=pipeline,
+                transforms=pipeline.transforms,
+                annotators=pipeline.annotators,
             )
 
     return app
