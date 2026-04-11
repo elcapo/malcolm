@@ -287,6 +287,108 @@ class TestBuildPipeline:
             build_pipeline(str(cfg))
 
 
+# ── Classification edge cases ───────────────────────────────────────────
+
+
+class _DualPlugin:
+    """Plugin that implements both Transform and Annotator protocols."""
+
+    name = "dual"
+    stores_snapshot = False
+
+    def transform_request(self, body):
+        return body
+
+    def transform_response(self, body, model=""):
+        return body
+
+    def transform_stream_line(self, line, state):
+        return [line]
+
+    def rewrite_path(self, path):
+        return path
+
+    def annotate_request(self, request_body, request_headers=None):
+        return []
+
+    def annotate_response(self, response_body, response_chunks=None):
+        return []
+
+
+class _PartialAnnotator:
+    """Broken plugin: has annotate_request but not annotate_response."""
+
+    name = "broken_annotator"
+
+    def annotate_request(self, request_body, request_headers=None):
+        return []
+
+
+class _PartialTransform:
+    """Broken plugin: has transform_request but is missing the other three methods."""
+
+    name = "broken_transform"
+    stores_snapshot = False
+
+    def transform_request(self, body):
+        return body
+
+
+class _InertPlugin:
+    """Plugin that implements neither protocol."""
+
+    name = "inert"
+
+
+@pytest.fixture
+def registry_with(registry_snapshot):
+    """Fixture that lets a test register a plugin factory and have it cleaned up."""
+    def _register(name: str, factory):
+        registry_snapshot[name] = factory
+    return _register
+
+
+class TestClassification:
+    def test_plugin_implementing_both_protocols_lands_in_both_lists(
+        self, registry_with, tmp_path,
+    ):
+        registry_with("dual", lambda cfg: _DualPlugin())
+        cfg = tmp_path / "malcolm.yaml"
+        cfg.write_text(yaml.dump({"transforms": ["dual"]}))
+
+        pipeline = build_pipeline(str(cfg))
+
+        assert len(pipeline.transforms) == 1
+        assert len(pipeline.annotators) == 1
+        assert pipeline.transforms[0] is pipeline.annotators[0]
+
+    def test_partial_annotator_fails_at_startup(self, registry_with, tmp_path):
+        registry_with("broken_annotator", lambda cfg: _PartialAnnotator())
+        cfg = tmp_path / "malcolm.yaml"
+        cfg.write_text(yaml.dump({"transforms": ["broken_annotator"]}))
+
+        with pytest.raises(ValueError, match="partial Annotator.*annotate_response"):
+            build_pipeline(str(cfg))
+
+    def test_partial_transform_fails_at_startup(self, registry_with, tmp_path):
+        registry_with("broken_transform", lambda cfg: _PartialTransform())
+        cfg = tmp_path / "malcolm.yaml"
+        cfg.write_text(yaml.dump({"transforms": ["broken_transform"]}))
+
+        with pytest.raises(ValueError, match="partial Transform.*rewrite_path"):
+            build_pipeline(str(cfg))
+
+    def test_plugin_implementing_nothing_fails_at_startup(
+        self, registry_with, tmp_path,
+    ):
+        registry_with("inert", lambda cfg: _InertPlugin())
+        cfg = tmp_path / "malcolm.yaml"
+        cfg.write_text(yaml.dump({"transforms": ["inert"]}))
+
+        with pytest.raises(ValueError, match="neither a Transform nor an Annotator"):
+            build_pipeline(str(cfg))
+
+
 # ── Entry point discovery ───────────────────────────────────────────────
 
 

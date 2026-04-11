@@ -63,12 +63,42 @@ REGISTRY: dict[str, Callable[[dict], object]] = {
 }
 
 
-def _is_transform(plugin: object) -> bool:
-    return hasattr(plugin, "transform_request")
+_TRANSFORM_METHODS = (
+    "transform_request",
+    "transform_response",
+    "transform_stream_line",
+    "rewrite_path",
+)
+_ANNOTATOR_METHODS = ("annotate_request", "annotate_response")
 
 
-def _is_annotator(plugin: object) -> bool:
-    return hasattr(plugin, "annotate_request")
+def _classify(plugin: object, name: str) -> tuple[bool, bool]:
+    """Return ``(is_transform, is_annotator)`` or raise on partial protocol.
+
+    A plugin that implements *any* method of a protocol must implement *all*
+    of them.  Partial implementations are almost always typos and would cause
+    silent failures at runtime.
+    """
+    transform_present = [
+        m for m in _TRANSFORM_METHODS if callable(getattr(plugin, m, None))
+    ]
+    annotator_present = [
+        m for m in _ANNOTATOR_METHODS if callable(getattr(plugin, m, None))
+    ]
+
+    if transform_present and len(transform_present) != len(_TRANSFORM_METHODS):
+        missing = sorted(set(_TRANSFORM_METHODS) - set(transform_present))
+        raise ValueError(
+            f"Plugin {name!r} is a partial Transform "
+            f"(missing methods: {missing})"
+        )
+    if annotator_present and len(annotator_present) != len(_ANNOTATOR_METHODS):
+        missing = sorted(set(_ANNOTATOR_METHODS) - set(annotator_present))
+        raise ValueError(
+            f"Plugin {name!r} is a partial Annotator "
+            f"(missing methods: {missing})"
+        )
+    return bool(transform_present), bool(annotator_present)
 
 
 def _discover_entry_points(entries: Iterable) -> None:
@@ -141,17 +171,15 @@ def build_pipeline(config_file: str = "malcolm.yaml") -> Pipeline:
                     f"Available: {sorted(REGISTRY)}"
                 )
             plugin = factory(config)
-            matched = False
-            if _is_transform(plugin):
-                pipeline.transforms.append(plugin)
-                matched = True
-            if _is_annotator(plugin):
-                pipeline.annotators.append(plugin)
-                matched = True
-            if not matched:
+            is_transform, is_annotator = _classify(plugin, name)
+            if not (is_transform or is_annotator):
                 raise ValueError(
                     f"Plugin {name!r} is neither a Transform nor an Annotator"
                 )
+            if is_transform:
+                pipeline.transforms.append(plugin)
+            if is_annotator:
+                pipeline.annotators.append(plugin)
 
     if pipeline.transforms:
         logger.info("transforms: %s", [t.name for t in pipeline.transforms])
